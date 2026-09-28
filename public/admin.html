@@ -112,6 +112,14 @@
   .fname b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
   .fname span { font-size: 11.5px; color: var(--faint); }
 
+  .pend { border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 12px; background: var(--surface); }
+  .pend .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+  .pend .amt { font-family: var(--display); font-weight: 700; font-size: 17px; color: var(--brand); }
+  .pend .f { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pend .utr { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-top: 3px; }
+  .pend .acts { display: flex; gap: 7px; margin-top: 9px; }
+  .pend .acts .btn { flex: 1; padding: 6px 10px; font-size: 12.5px; }
+
   .banner {
     display: flex; align-items: flex-start; gap: 10px;
     padding: 11px 14px; border-radius: var(--radius);
@@ -194,6 +202,7 @@
           <div class="tile sun">  <div class="k">Revenue today</div> <div class="v" id="t-rev">—</div>    <div class="n" id="t-rev-n">&nbsp;</div></div>
           <div class="tile cyan"> <div class="k">Awaiting pickup</div><div class="v" id="t-wait">—</div>   <div class="n" id="t-wait-n">&nbsp;</div></div>
           <div class="tile flame"><div class="k">Failed</div>        <div class="v" id="t-fail">—</div>   <div class="n" id="t-fail-n">&nbsp;</div></div>
+          <div class="tile sun">  <div class="k">To verify</div>     <div class="v" id="t-verify">—</div> <div class="n" id="t-verify-n">&nbsp;</div></div>
         </div>
       </section>
 
@@ -236,6 +245,14 @@
         </div>
 
         <div class="side">
+          <div class="card hide" id="pending-card" style="border-top:3px solid var(--sun);">
+            <header>
+              <h2>Payments to verify</h2>
+              <span class="pill warn" id="pending-count">0</span>
+            </header>
+            <div class="body" id="pending-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+          </div>
+
           <div class="card">
             <header><h2>Send from a phone</h2></header>
             <div class="body qrwrap">
@@ -407,9 +424,13 @@
     $('t-wait-n').textContent = t.printing ? t.printing + ' printing now' : 'codes not yet entered';
     $('t-fail').textContent = t.failed;
     $('t-fail-n').textContent = t.failed ? 'needs attention' : 'none';
+    $('t-verify').textContent = t.awaitingPayment || 0;
+    $('t-verify-n').textContent = (s.paymentMode === 'sim') ? 'sim mode — auto-paid' : 'UPI payments claimed';
+
+    drawPending(s.pending || []);
 
     $('bar-sub').textContent =
-      `${s.kioskId} · ${p.simulated ? 'simulation mode' : (p.activePrinter || 'no printer')}`;
+      `${s.kioskId} · ${p.simulated ? 'simulation mode' : (p.activePrinter || 'no printer')} · payments: ${s.paymentMode}`;
     $('printer-pill').className = 'pill ' + (p.simulated ? 'warn' : (p.activePrinter ? 'ok' : 'bad'));
     $('printer-pill').textContent = p.simulated ? 'simulation' : (p.activePrinter ? 'printer ready' : 'no printer');
     $('sim-banner').classList.toggle('hide', !p.simulated);
@@ -436,6 +457,55 @@
     drawChart(s.days);
     drawRows(s.recent);
   }
+
+  function drawPending(list) {
+    $('pending-card').classList.toggle('hide', list.length === 0);
+    $('pending-count').textContent = list.length;
+    const esc = (x) => String(x).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+
+    $('pending-list').innerHTML = list.map((p) => {
+      const when = p.claimed_at ? new Date(p.claimed_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '';
+      return `<div class="pend" data-id="${p.id}">
+        <div class="top">
+          <span class="amt">${rupees(p.amount)}</span>
+          <span class="dim" style="font-size:11.5px;">${when}</span>
+        </div>
+        <div class="f">${esc(p.filename)}</div>
+        <div class="utr">UTR ${esc(p.utr || '—')} · ${esc(p.order_id)}</div>
+        <div class="acts">
+          <button class="btn" data-act="approve" type="button">Received</button>
+          <button class="btn secondary" data-act="reject" type="button">Reject</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  $('pending-list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const card = btn.closest('.pend');
+    const orderId = Number(card.dataset.id);
+    const reject = btn.dataset.act === 'reject';
+    if (reject && !confirm('Reject this payment? The student will be told it could not be verified.')) return;
+
+    for (const b of card.querySelectorAll('button')) b.disabled = true;
+    try {
+      const r = await fetch('/api/payments/approve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId, reject }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(d.error || 'Could not update that payment.');
+        for (const b of card.querySelectorAll('button')) b.disabled = false;
+        return;
+      }
+      load();
+    } catch {
+      alert('Could not reach the kiosk agent.');
+      for (const b of card.querySelectorAll('button')) b.disabled = false;
+    }
+  });
 
   $('filters').addEventListener('click', (e) => {
     const chip = e.target.closest('.chip');

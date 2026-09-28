@@ -145,6 +145,53 @@ async function waitForJob(jobId, timeoutMs = 240000) {
     ok('OTP cannot be reused', reuse.status === 409 && reuse.body.code === 'ALREADY_PRINTED');
   }
 
+  /* -- payment gating: only reachable when the kiosk is not in sim mode -- */
+  if (h.body.paymentMode && h.body.paymentMode !== 'sim') {
+    console.log(`\n  payment mode: ${h.body.paymentMode}\n`);
+
+    const { makePdf } = await import('../src/pdf.js');
+    const upRes = await fetch(BASE + '/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/pdf', 'X-Filename': 'payment-test.pdf' },
+      body: makePdf({ pageCount: 2, title: 'Payment Gate Test' }),
+    });
+    const up = await upRes.json();
+    const made = await post('/api/orders', { documentId: up.documentId, copies: 1 });
+
+    ok('unpaid order withholds the OTP', made.body.otp === null);
+    ok('unpaid order is not READY_FOR_KIOSK', made.body.order.print_status === 'CREATED',
+       made.body.order.print_status);
+
+    const status = await get('/api/orders/' + made.body.order.id + '/status');
+    ok('status endpoint withholds the OTP while unpaid',
+       status.body.paymentStatus === 'PENDING' && status.body.otp === null);
+
+    const claimBad = await post('/api/payments/claim',
+      { orderId: made.body.order.id, utr: '123' });
+    ok('malformed UPI reference rejected', claimBad.status === 400);
+
+    const claim = await post('/api/payments/claim',
+      { orderId: made.body.order.id, utr: '400000000001' });
+    ok('UPI reference accepted, awaiting verification',
+       claim.status === 202 && claim.body.status === 'AWAITING_VERIFICATION');
+
+    const stillLocked = await get('/api/orders/' + made.body.order.id + '/status');
+    ok('claimed-but-unverified still withholds the OTP', stillLocked.body.otp === null);
+
+    const approved = await post('/api/payments/approve', { orderId: made.body.order.id });
+    ok('staff approval marks it PAID', approved.status === 200 && approved.body.status === 'PAID');
+
+    const released = await get('/api/orders/' + made.body.order.id + '/status');
+    ok('OTP released after approval', Boolean(released.body.otp));
+
+    const unsigned = await fetch(BASE + '/api/payments/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderId: made.body.order.id }),
+    });
+    ok('unsigned webhook rejected', unsigned.status === 401);
+  }
+
   console.log(`\n  ${pass} passed, ${fail} failed\n`);
   process.exit(fail ? 1 : 0);
 })().catch((err) => {

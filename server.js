@@ -12,6 +12,7 @@ import { generateOtp, verifyOtp, otpExpiryISO } from './src/otp.js';
 import { makePdf, countPdfPages, isPdf, isEncrypted } from './src/pdf.js';
 import { parseMultipart } from './src/multipart.js';
 import { qrSvg } from './src/qr.js';
+import { buildUpiUri, normaliseUtr, verifyWebhookSignature, isValidVpa } from './src/upi.js';
 import { driverInfo, resolveDriver } from './src/printer.js';
 import { startJob, getJob, snapshot, bus } from './src/jobs.js';
 
@@ -105,6 +106,22 @@ function lanAddress() {
 
 const uploadUrl = () => `http://${lanAddress()}:${config.port}/upload`;
 
+/**
+ * Staff actions (approving a payment) are gated. With ADMIN_TOKEN set, the
+ * token is required. Without one, approvals are accepted only from the kiosk
+ * machine itself — the console is meant to run on the Pi, not across the LAN.
+ */
+function isStaff(req) {
+  if (config.payments.adminToken) {
+    const given = req.headers['x-admin-token'] || '';
+    const a = Buffer.from(String(given));
+    const b = Buffer.from(config.payments.adminToken);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  }
+  const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  return ip === '127.0.0.1' || ip === '::1';
+}
+
 const clientKey = (req) =>
   (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
   req.socket.remoteAddress ||
@@ -156,6 +173,8 @@ async function handleApi(req, res, url) {
       resetDelayMs: config.resetDelayMs,
       otpLength: config.otp.length,
       uploadUrl: uploadUrl(),
+      paymentMode: config.payments.mode,
+      upiConfigured: isValidVpa(config.upi.vpa),
     });
   }
 
@@ -218,6 +237,22 @@ async function handleApi(req, res, url) {
       uptimeSec: Math.round(process.uptime()),
       printer: await driverInfo(),
       uploadUrl: uploadUrl(),
+      paymentMode: config.payments.mode,
+      upiConfigured: isValidVpa(config.upi.vpa),
+      pending: orders
+        .filter((o) => o.payment_status === 'AWAITING_VERIFICATION')
+        .map((o) => {
+          const doc = store.getDocument(o.document_id);
+          return {
+            id: o.id,
+            order_id: o.order_id,
+            amount: o.amount,
+            utr: o.payment_ref,
+            claimed_at: o.payment_claimed_at,
+            filename: doc ? doc.original_filename : '(removed)',
+            sheets: sheetsOf(o),
+          };
+        }),
       totals: {
         jobsToday: todays.length,
         sheetsToday: todays.reduce((s, o) => s + sheetsOf(o), 0),
@@ -227,6 +262,7 @@ async function handleApi(req, res, url) {
         waiting: waiting.length,
         printing: printing.length,
         failed: failed.length,
+        awaitingPayment: orders.filter((o) => o.payment_status === 'AWAITING_VERIFICATION').length,
         shredded: docs.filter((d) => d.deleted_at).length,
         onDisk: docs.filter((d) => !d.deleted_at && d.storage_path).length,
       },
@@ -469,6 +505,8 @@ async function handleApi(req, res, url) {
     }
 
     const otp = generateOtp();
+    const paidUpFront = config.payments.mode === 'sim';
+
     const order = store.createOrder({
       document_id: doc.id,
       paper_size: paperSize,
@@ -477,15 +515,170 @@ async function handleApi(req, res, url) {
       copies,
       amount: quote.amount,
       pickup_otp: otp,
-      // Razorpay lives on the web app; this agent trusts a payment already verified
-      // there. With SIM_ENABLED the order is marked paid so the kiosk can be tested.
-      payment_status: config.simEnabled ? 'PAID' : 'PENDING',
-      print_status: config.simEnabled ? 'READY_FOR_KIOSK' : 'CREATED',
+      payment_status: paidUpFront ? 'PAID' : 'PENDING',
+      print_status: paidUpFront ? 'READY_FOR_KIOSK' : 'CREATED',
+      payment_method: config.payments.mode,
       otp_expires_at: otpExpiryISO(),
     });
 
-    return json(res, 201, { order, quote, otp, document: {
-      original_filename: doc.original_filename, page_count: doc.page_count } });
+    return json(res, 201, {
+      order,
+      quote,
+      // The code exists from the start but is only handed over once paid —
+      // otherwise the payment step is decorative and anyone prints for free.
+      otp: paidUpFront ? otp : null,
+      paymentMode: config.payments.mode,
+      upiConfigured: isValidVpa(config.upi.vpa),
+      // Handed to the phone so "Open UPI app" uses the identical intent the QR encodes.
+      upiUri: (!paidUpFront && isValidVpa(config.upi.vpa))
+        ? buildUpiUri({ amount: quote.amount, orderId: order.order_id })
+        : null,
+      document: { original_filename: doc.original_filename, page_count: doc.page_count },
+    });
+  }
+
+  /* ----------------------------- payments ------------------------------ */
+
+  /** Polled by the phone after the student pays; reveals the OTP once paid. */
+  if (method === 'GET' && /^\/api\/orders\/\d+\/status$/.test(pathname)) {
+    const order = store.getOrder(Number(pathname.split('/')[3]));
+    if (!order) return json(res, 404, { error: 'Unknown order' });
+    return json(res, 200, {
+      orderId: order.order_id,
+      amount: order.amount,
+      paymentStatus: order.payment_status,
+      printStatus: order.print_status,
+      // The code is handed over only once the payment is actually recognised.
+      otp: order.payment_status === 'PAID' ? order.pickup_otp : null,
+      utr: order.payment_ref || null,
+    });
+  }
+
+  /** The UPI intent QR for one order: amount and order id pre-filled. */
+  if (method === 'GET' && pathname === '/api/upi-qr') {
+    const order = store.getOrder(Number(url.searchParams.get('order')));
+    if (!order) return json(res, 404, { error: 'Unknown order' });
+    try {
+      const uri = buildUpiUri({ amount: order.amount, orderId: order.order_id });
+      const svg = qrSvg(uri, { scale: 7, dark: '#11161f', light: '#ffffff' });
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Content-Length': Buffer.byteLength(svg),
+        'Cache-Control': 'no-store',
+      });
+      return res.end(svg);
+    } catch (err) {
+      return json(res, 400, { error: err.message });
+    }
+  }
+
+  /** Student says "I've paid" and submits the 12-digit UPI reference. */
+  if (method === 'POST' && pathname === '/api/payments/claim') {
+    const body = await readJson(req);
+    const order = store.getOrder(Number(body.orderId));
+    if (!order) return json(res, 404, { error: 'Unknown order' });
+    if (order.payment_status === 'PAID') {
+      return json(res, 200, { ok: true, alreadyPaid: true, otp: order.pickup_otp });
+    }
+
+    const utr = normaliseUtr(body.utr);
+    if (!utr) {
+      return json(res, 400, {
+        error: 'Enter the 12-digit UPI reference number from your payment app.',
+      });
+    }
+
+    // One reference, one job. Otherwise a single payment prints all term.
+    const clash = store.raw().orders.find((o) => o.payment_ref === utr && o.id !== order.id);
+    if (clash) {
+      return json(res, 409, {
+        error: 'That UPI reference has already been used for another order.',
+      });
+    }
+
+    store.updateOrder(order.id, {
+      payment_status: 'AWAITING_VERIFICATION',
+      payment_ref: utr,
+      payment_claimed_at: new Date().toISOString(),
+    });
+    console.log(`[payment] ${order.order_id} claimed with UTR ${utr} — awaiting approval`);
+
+    return json(res, 202, {
+      ok: true,
+      status: 'AWAITING_VERIFICATION',
+      message: 'Payment submitted. A staff member will confirm it shortly.',
+    });
+  }
+
+  /** Staff approve (or reject) a claimed payment from the console. */
+  if (method === 'POST' && pathname === '/api/payments/approve') {
+    if (!isStaff(req)) return json(res, 403, { error: 'Staff approval is not allowed from here.' });
+
+    const body = await readJson(req);
+    const order = store.getOrder(Number(body.orderId));
+    if (!order) return json(res, 404, { error: 'Unknown order' });
+
+    if (body.reject) {
+      store.updateOrder(order.id, { payment_status: 'FAILED', print_status: 'CREATED' });
+      console.log(`[payment] ${order.order_id} rejected by staff`);
+      return json(res, 200, { ok: true, status: 'FAILED' });
+    }
+
+    store.updateOrder(order.id, {
+      payment_status: 'PAID',
+      print_status: 'READY_FOR_KIOSK',
+      payment_verified_at: new Date().toISOString(),
+      payment_method: order.payment_method || 'upi_manual',
+    });
+    console.log(`[payment] ${order.order_id} approved by staff — OTP released`);
+    return json(res, 200, { ok: true, status: 'PAID' });
+  }
+
+  /**
+   * Automated confirmation. Works with a real gateway, or with a phone app that
+   * relays the bank's payment SMS. Body must be HMAC-SHA256 signed with
+   * PAYMENT_WEBHOOK_SECRET — the scheme the project report specifies.
+   */
+  if (method === 'POST' && pathname === '/api/payments/webhook') {
+    const raw = await readBody(req, 256 * 1024);
+    const sig = req.headers['x-signature'] || req.headers['x-razorpay-signature'];
+
+    const check = verifyWebhookSignature(raw, sig);
+    if (!check.ok) {
+      console.warn('[payment] webhook rejected:', check.reason);
+      return json(res, 401, { error: 'Invalid signature' });
+    }
+
+    let body;
+    try { body = JSON.parse(raw.toString('utf8')); } catch {
+      return json(res, 400, { error: 'Malformed JSON body' });
+    }
+
+    const order = body.orderId
+      ? store.getOrder(Number(body.orderId))
+      : store.getOrderByBusinessId(String(body.order_id || ''));
+    if (!order) return json(res, 404, { error: 'Unknown order' });
+
+    // Never trust an amount the caller states without checking it against ours.
+    if (body.amount !== undefined && Number(body.amount) !== order.amount) {
+      console.warn(`[payment] webhook amount mismatch on ${order.order_id}: ` +
+                   `claimed ${body.amount}, expected ${order.amount}`);
+      return json(res, 409, { error: 'Amount does not match the order' });
+    }
+
+    if (order.payment_status === 'PAID') {
+      return json(res, 200, { ok: true, alreadyPaid: true });
+    }
+
+    store.updateOrder(order.id, {
+      payment_status: 'PAID',
+      print_status: 'READY_FOR_KIOSK',
+      payment_ref: body.utr || body.payment_id || null,
+      payment_verified_at: new Date().toISOString(),
+      payment_method: body.method || 'webhook',
+    });
+    console.log(`[payment] ${order.order_id} confirmed by webhook`);
+    return json(res, 200, { ok: true, status: 'PAID' });
   }
 
   /* -- simulator: stand in for the phone app + Razorpay -- */

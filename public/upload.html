@@ -96,6 +96,30 @@
     background: var(--info-bg); color: var(--brand); font-size: 13px; text-align: left;
   }
 
+  .pay { text-align: center; }
+  .pay .amount {
+    font-family: var(--display); font-size: 34px; font-weight: 700;
+    color: var(--brand); font-variant-numeric: tabular-nums; line-height: 1.1;
+  }
+  .upiqr {
+    width: 100%; max-width: 232px; aspect-ratio: 1; margin: 14px auto 0; display: block;
+    border: 1px solid var(--line); border-radius: var(--radius); background: #fff;
+  }
+  .utr { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); text-align: left; }
+  .utr input { font-family: var(--mono); letter-spacing: .06em; }
+
+  .waiting {
+    display: flex; align-items: center; gap: 12px; text-align: left;
+    margin-top: 14px; padding: 12px 14px; border-radius: var(--radius);
+    background: var(--info-bg); color: var(--brand);
+  }
+  .spinner {
+    width: 20px; height: 20px; flex: 0 0 auto; border-radius: 50%;
+    border: 2.5px solid var(--brand-line); border-top-color: var(--brand);
+    animation: spin .9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   .err {
     margin-top: 12px; padding: 11px 13px; border-radius: var(--radius);
     background: var(--bad-bg); color: var(--bad); border: 1px solid #F3C9C5; font-size: 13px;
@@ -184,9 +208,47 @@
       </div>
     </section>
 
-    <!-- 3 -->
+    <!-- 3 · pay (UPI modes only) -->
     <section class="card step hide" id="step3">
-      <header><span class="n">3</span><h2>Collect at the kiosk</h2></header>
+      <header><span class="n">3</span><h2>Pay</h2></header>
+      <div class="body pay">
+        <div class="amount">Rs. <span id="p-amt">0</span></div>
+        <div class="dim" style="font-size:12.5px;" id="p-meta">&nbsp;</div>
+
+        <img id="upi-qr" class="upiqr" alt="UPI payment QR code">
+        <a class="btn" id="upi-open" href="#" style="width:100%;margin-top:10px;">Open UPI app</a>
+        <div class="dim" style="font-size:11.5px;margin-top:8px;">
+          Scan with any UPI app, or tap the button if you are on the phone.
+          Check the amount before you confirm.
+        </div>
+
+        <div class="utr">
+          <label class="field"><span>UPI reference number (12 digits)</span>
+            <input id="utr" type="text" inputmode="numeric" maxlength="12"
+                   placeholder="e.g. 412345678901" autocomplete="off"></label>
+          <div class="dim" style="font-size:11.5px;margin-top:5px;">
+            Your payment app shows this as "UPI transaction ID" or "UTR" on the receipt.
+          </div>
+          <button class="btn go" id="claim">I have paid</button>
+        </div>
+
+        <div id="waiting" class="waiting hide">
+          <div class="spinner"></div>
+          <div>
+            <b>Waiting for confirmation…</b>
+            <div class="dim" style="font-size:12px;">
+              A staff member is verifying your payment. This page updates on its own.
+            </div>
+          </div>
+        </div>
+
+        <div id="pay-err" class="err hide"></div>
+      </div>
+    </section>
+
+    <!-- 4 -->
+    <section class="card step hide" id="step4">
+      <header><span class="n">4</span><h2>Collect at the kiosk</h2></header>
       <div class="body otp">
         <div class="cap">Your pickup code</div>
         <div class="code" id="o-code">------</div>
@@ -210,6 +272,7 @@
   const $ = (id) => document.getElementById(id);
   const RATES = { bw: { single: 2, duplex: 3 }, colour: { single: 10, duplex: 15 } };
   let doc = null, busy = false;
+  let order = null, poller = null, mode = 'sim', upiOk = false;
 
   const showErr = (m) => { $('err').textContent = m; $('err').classList.remove('hide'); };
   const clearErr = () => $('err').classList.add('hide');
@@ -330,11 +393,13 @@
       const d = await r.json();
       if (!r.ok) { showErr(d.error || 'Could not create the order.'); return; }
 
-      $('o-code').textContent = d.otp;
-      $('o-meta').textContent = d.order.order_id + ' · Rs.' + d.order.amount + ' · ' + d.quote.totalSheets + ' sheets';
+      order = d.order;
+      mode = d.paymentMode || mode;
+      upiOk = Boolean(d.upiConfigured);
       $('step2').classList.add('done', 'hide');
-      $('step3').classList.remove('hide');
-      $('step3').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      if (d.otp) { revealCode(d.otp); return; }   // sim mode: already paid
+      openPayStep(d);
     } catch {
       showErr('Could not reach the kiosk.');
     } finally {
@@ -344,7 +409,13 @@
   });
 
   $('again').addEventListener('click', () => {
-    doc = null; picker.value = '';
+    doc = null; order = null; picker.value = '';
+    if (poller) { clearInterval(poller); poller = null; }
+    $('utr').value = '';
+    $('waiting').classList.add('hide');
+    $('claim').classList.remove('hide');
+    clearPayErr();
+    $('step4').classList.add('hide');
     $('step3').classList.add('hide');
     $('step2').classList.remove('hide', 'done');
     $('step2').classList.add('todo');
@@ -355,11 +426,103 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
+  /* -------------------------------- payment -------------------------------- */
+
+  function openPayStep(d) {
+    $('p-amt').textContent = d.order.amount;
+    $('p-meta').textContent = d.order.order_id + ' · ' + d.quote.totalSheets + ' sheets';
+
+    if (upiOk) {
+      $('upi-qr').src = '/api/upi-qr?order=' + d.order.id;
+      $('upi-qr').classList.remove('hide');
+      $('upi-open').classList.remove('hide');
+      // The exact intent the QR encodes, so tapping works on the phone itself.
+      $('upi-open').href = d.upiUri || '#';
+    } else {
+      $('upi-qr').classList.add('hide');
+      $('upi-open').classList.add('hide');
+      showPayErr('No UPI ID is configured on this kiosk. Pay at the desk and ask staff to release your job.');
+    }
+
+    $('step3').classList.remove('hide');
+    $('step3').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    startPolling();
+  }
+
+  const showPayErr = (m) => { $('pay-err').textContent = m; $('pay-err').classList.remove('hide'); };
+  const clearPayErr = () => $('pay-err').classList.add('hide');
+
+  $('claim').addEventListener('click', async () => {
+    if (!order) return;
+    clearPayErr();
+    const utr = $('utr').value.trim();
+    if (!/^[0-9]{12}$/.test(utr)) {
+      showPayErr('Enter the 12-digit UPI reference from your payment receipt.');
+      return;
+    }
+    $('claim').disabled = true;
+    $('claim').textContent = 'Submitting…';
+    try {
+      const r = await fetch('/api/payments/claim', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: order.id, utr }),
+      });
+      const d = await r.json();
+      if (!r.ok) { showPayErr(d.error || 'Could not submit the payment.'); return; }
+      if (d.otp) { revealCode(d.otp); return; }
+      $('waiting').classList.remove('hide');
+      $('claim').classList.add('hide');
+      startPolling();
+    } catch {
+      showPayErr('Could not reach the kiosk.');
+    } finally {
+      $('claim').disabled = false;
+      $('claim').textContent = 'I have paid';
+    }
+  });
+
+  /**
+   * The phone cannot know about a UPI payment on its own, so it asks the kiosk
+   * every few seconds whether the payment has been recognised yet. The code is
+   * only sent once the server says PAID.
+   */
+  function startPolling() {
+    if (poller) clearInterval(poller);
+    poller = setInterval(async () => {
+      if (!order) return;
+      try {
+        const s = await (await fetch('/api/orders/' + order.id + '/status')).json();
+        if (s.paymentStatus === 'PAID' && s.otp) { revealCode(s.otp); }
+        else if (s.paymentStatus === 'FAILED') {
+          clearInterval(poller); poller = null;
+          $('waiting').classList.add('hide');
+          $('claim').classList.remove('hide');
+          showPayErr('That payment could not be verified. Please check with the desk.');
+        }
+      } catch { /* keep trying */ }
+    }, 3000);
+  }
+
+  function revealCode(otp) {
+    if (poller) { clearInterval(poller); poller = null; }
+    $('o-code').textContent = otp;
+    $('o-meta').textContent = order
+      ? order.order_id + ' · Rs.' + order.amount
+      : '';
+    $('step3').classList.add('hide');
+    $('step2').classList.add('hide');
+    $('step4').classList.remove('hide');
+    $('step4').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
   fetch('/api/health').then((r) => r.json()).then((h) => {
     const p = h.printer || {};
     const pill = $('kiosk-pill');
     pill.textContent = h.kioskId;
     pill.className = 'pill ' + (p.simulated ? 'warn' : 'ok');
+    mode = h.paymentMode || mode;
+    upiOk = Boolean(h.upiConfigured);
+    if (mode !== 'sim') $('pay').textContent = 'Continue to payment';
   }).catch(() => {});
 
   renderQuote();

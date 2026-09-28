@@ -26,17 +26,30 @@ Four surfaces, all served by the Pi:
 | `/admin` | staff — jobs, sheets, revenue, printer health |
 | `/sim` | you — mint test orders without a real upload |
 
-See **`VERCEL.md`** for what belongs on Vercel (short version: not the printing, and for a
+See **`PAYMENTS.md`** for how UPI payment actually works here (and the one thing nobody tells you
+about UPI QR codes), **`VERCEL.md`** for what belongs on Vercel (short version: not the printing, and for a
 LAN-only setup, nothing) and **`REPORT-COMPLIANCE.md`** for a section-by-section audit against the
 project report.
 
 ---
 
-## Quick start (simulation — no printer needed)
+## Quick start
 
 ```bash
-cd printkiosk-pi
-PRINTER_DRIVER=mock node server.js
+bash run.sh                                   # Linux / Raspberry Pi / macOS
+run.bat                                       # Windows
+```
+
+One command: checks Node, checks the printer, starts the agent, waits until it answers, and opens
+the dashboard. **It prints for real by default** — if no printer is set up it stops and tells you
+how to add one rather than quietly simulating.
+
+```bash
+bash run.sh --printer "Canon_MF240"           # pin a queue
+bash run.sh --upi you@okhdfcbank              # turn on UPI payment
+bash run.sh --install                         # also install Node + CUPS
+bash run.sh --service                         # install as a boot service
+bash run.sh --sim                             # no printer, simulate (opt-in)
 ```
 
 Then:
@@ -129,6 +142,11 @@ Everything is an environment variable; every one has a working default.
 | `MOCK_DURATION_MS` | `7000` | Simulated print duration |
 | `SUMATRA_PATH` | auto-detect | Windows silent PDF printing |
 | `KIOSK_HOST` | auto-detect | Force the LAN address shown in the QR code |
+| `PAYMENT_MODE` | `sim` | `sim` \| `upi_manual` \| `webhook` — see `PAYMENTS.md` |
+| `UPI_VPA` | — | Your UPI ID, e.g. `you@okhdfcbank` |
+| `UPI_NAME` | `PrintKiosk` | Payee name shown in the UPI app |
+| `PAYMENT_WEBHOOK_SECRET` | — | HMAC key for `/api/payments/webhook` |
+| `ADMIN_TOKEN` | — | Required for staff approval; without it, localhost only |
 | `UPLOAD_MAX_BYTES` | `26214400` | Upload limit (25 MB) |
 | `UPLOAD_MAX_PAGES` | `200` | Page limit for one job |
 
@@ -147,6 +165,11 @@ Everything is an environment variable; every one has a working default.
 | `GET` | `/api/orders` | Order list |
 | `GET` | `/api/stats` | Dashboard metrics (KPIs, 7-day series, recent jobs) |
 | `GET` | `/api/qr` | QR code SVG for the upload URL |
+| `GET` | `/api/orders/:id/status` | Payment status; returns the OTP only once paid |
+| `GET` | `/api/upi-qr` | UPI payment QR for one order (amount pre-filled) |
+| `POST` | `/api/payments/claim` | Student submits the 12-digit UPI reference |
+| `POST` | `/api/payments/approve` | Staff confirm or reject a claimed payment |
+| `POST` | `/api/payments/webhook` | HMAC-SHA256 signed automatic confirmation |
 | `POST` | `/api/sim/order` | **sim only** — create a paid order |
 | `POST` | `/api/sim/quote` | **sim only** — price without ordering |
 | `POST` | `/api/sim/reset` | **sim only** — wipe everything |
@@ -179,6 +202,8 @@ src/multipart.js       binary-safe form-upload parser
 src/printer.js         Hardware Abstraction Layer: cups | windows | mock
 src/jobs.js            lifecycle, progress bus, shredding, error mapping
 src/qr.js              QR encoder (byte mode, ECC-M, versions 1-10)
+src/upi.js             UPI intent building, UTR checks, webhook HMAC
+run.sh / run.bat       one-command start: deps, printer check, dashboard
 public/kiosk.html      the touchscreen keypad
 public/upload.html     student upload page (real PDFs, real page counts)
 public/admin.html      operations console

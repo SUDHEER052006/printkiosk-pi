@@ -49,6 +49,26 @@ export const config = {
     strikeDecayMs: num(env.OTP_STRIKE_DECAY_MS, 30 * 60 * 1000),
   },
 
+  /**
+   * How a job becomes payable.
+   *   sim        - auto-paid. Demo only; never on a kiosk students can reach.
+   *   upi_manual - show a UPI QR, student submits the UPI reference, staff approve.
+   *   webhook    - an HMAC-signed callback marks it paid (gateway or SMS relay).
+   */
+  payments: {
+    mode: (env.PAYMENT_MODE || (bool(env.SIM_ENABLED, true) ? 'sim' : 'upi_manual')).toLowerCase(),
+    webhookSecret: env.PAYMENT_WEBHOOK_SECRET || '',
+    // Staff approval token. Empty = approvals allowed from this machine only.
+    adminToken: env.ADMIN_TOKEN || '',
+    // How long an unpaid order stays claimable before it is abandoned.
+    pendingTtlMin: num(env.PAYMENT_PENDING_TTL_MIN, 30),
+  },
+
+  upi: {
+    vpa: env.UPI_VPA || '',
+    name: env.UPI_NAME || 'PrintKiosk',
+  },
+
   upload: {
     maxBytes: num(env.UPLOAD_MAX_BYTES, 25 * 1024 * 1024),
     maxPages: num(env.UPLOAD_MAX_PAGES, 200),

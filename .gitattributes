@@ -5,3 +5,5 @@
 *.html text eol=lf
 *.md text eol=lf
 *.pdf binary
+*.sh text eol=lf
+*.bat text eol=crlf

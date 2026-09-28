@@ -65,16 +65,30 @@ cd printkiosk-pi
 There is **no `npm install`**. The project has zero dependencies on purpose — so it can't break
 because of a bad network or a missing package.
 
-### 2.2 Start it in simulation mode
+### 2.2 Start it
 
 ```bash
-PRINTER_DRIVER=mock node server.js
+bash run.sh            # Linux / Pi / macOS
+run.bat                # Windows
 ```
 
-On **Windows PowerShell** the syntax is different:
+One command does the lot: checks Node, checks the printer, starts the agent, waits until it
+answers, then opens the dashboard.
 
-```powershell
-$env:PRINTER_DRIVER="mock"; node server.js
+**It prints for real by default.** If no printer is set up it stops and tells you how to add one,
+rather than pretending to work. To try it with no printer at all, opt in:
+
+```bash
+bash run.sh --sim
+```
+
+Useful flags:
+
+```bash
+bash run.sh --printer "Canon_MF240"     # pin a queue
+bash run.sh --upi you@okhdfcbank        # turn on UPI payment
+bash run.sh --install                   # install Node + CUPS too
+bash run.sh --service                   # install as a boot service
 ```
 
 You should see:
