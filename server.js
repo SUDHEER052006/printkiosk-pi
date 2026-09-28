@@ -175,6 +175,7 @@ async function handleApi(req, res, url) {
       uploadUrl: uploadUrl(),
       paymentMode: config.payments.mode,
       upiConfigured: isValidVpa(config.upi.vpa),
+      upiStaticImage: Boolean(config.upi.qrImage),
     });
   }
 
@@ -529,6 +530,7 @@ async function handleApi(req, res, url) {
       otp: paidUpFront ? otp : null,
       paymentMode: config.payments.mode,
       upiConfigured: isValidVpa(config.upi.vpa),
+      upiStaticImage: Boolean(config.upi.qrImage),
       // Handed to the phone so "Open UPI app" uses the identical intent the QR encodes.
       upiUri: (!paidUpFront && isValidVpa(config.upi.vpa))
         ? buildUpiUri({ amount: quote.amount, orderId: order.order_id })
@@ -552,6 +554,23 @@ async function handleApi(req, res, url) {
       otp: order.payment_status === 'PAID' ? order.pickup_otp : null,
       utr: order.payment_ref || null,
     });
+  }
+
+  /** Your own saved bank/PhonePe QR image, when UPI_QR_IMAGE is set. */
+  if (method === 'GET' && pathname === '/api/upi-image') {
+    if (!config.upi.qrImage) return json(res, 404, { error: 'No UPI_QR_IMAGE configured' });
+    try {
+      const file = path.resolve(config.root, config.upi.qrImage);
+      const data = await fsp.readFile(file);
+      res.writeHead(200, {
+        'Content-Type': MIME[path.extname(file).toLowerCase()] || 'image/jpeg',
+        'Content-Length': data.length,
+        'Cache-Control': 'no-store',
+      });
+      return res.end(data);
+    } catch (err) {
+      return json(res, 404, { error: 'UPI_QR_IMAGE could not be read: ' + err.message });
+    }
   }
 
   /** The UPI intent QR for one order: amount and order id pre-filled. */

@@ -1,9 +1,34 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+
+/**
+ * Loads a .env file if one exists. Kept to a dozen lines rather than pulling in
+ * dotenv, and it exists for one reason: a real UPI ID belongs on the machine,
+ * not in a public git repository. .env is gitignored.
+ */
+function loadEnvFile(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return; }
+  for (const raw of text.split('\n')) {
+    const t = raw.trim();
+    if (!t || t.startsWith('#')) continue;
+    const eq = t.indexOf('=');
+    if (eq < 1) continue;
+    const key = t.slice(0, eq).trim();
+    let val = t.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    // A real environment variable always wins over the file.
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
+}
+loadEnvFile(path.join(ROOT, '.env'));
 
 const env = process.env;
 const num = (v, d) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
@@ -67,6 +92,14 @@ export const config = {
   upi: {
     vpa: env.UPI_VPA || '',
     name: env.UPI_NAME || 'PrintKiosk',
+    /**
+     * Optional path to your own bank/PhonePe QR image, shown instead of a
+     * generated one. Note the trade-off: a saved QR is static, so it cannot
+     * carry the per-order amount and the student must type it in. The
+     * generated QR fills the amount and order number in automatically, so it
+     * is the better default whenever you have the VPA.
+     */
+    qrImage: env.UPI_QR_IMAGE || '',
   },
 
   upload: {

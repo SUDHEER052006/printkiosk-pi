@@ -4,3 +4,7 @@ data/
 *.tmp
 .DS_Store
 smoke.pdf
+
+# local secrets and personal payment details
+.env
+private/

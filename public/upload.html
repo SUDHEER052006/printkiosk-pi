@@ -108,6 +108,11 @@
   .utr { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); text-align: left; }
   .utr input { font-family: var(--mono); letter-spacing: .06em; }
 
+  .amtwarn {
+    margin-top: 10px; padding: 10px 12px; border-radius: var(--radius);
+    background: var(--warn-bg); color: var(--warn); font-size: 12.5px; text-align: left;
+  }
+
   .waiting {
     display: flex; align-items: center; gap: 12px; text-align: left;
     margin-top: 14px; padding: 12px 14px; border-radius: var(--radius);
@@ -220,6 +225,10 @@
         <div class="dim" style="font-size:11.5px;margin-top:8px;">
           Scan with any UPI app, or tap the button if you are on the phone.
           Check the amount before you confirm.
+        </div>
+        <div id="amt-warn" class="amtwarn hide">
+          This QR does not carry an amount — <b>type Rs. <span id="w-amt">0</span></b> yourself in
+          your UPI app before paying.
         </div>
 
         <div class="utr">
@@ -430,14 +439,23 @@
 
   function openPayStep(d) {
     $('p-amt').textContent = d.order.amount;
+    $('w-amt').textContent = d.order.amount;
     $('p-meta').textContent = d.order.order_id + ' · ' + d.quote.totalSheets + ' sheets';
 
     if (upiOk) {
+      // Generated QR: carries this order's amount and number, so the student
+      // cannot pay the wrong figure.
       $('upi-qr').src = '/api/upi-qr?order=' + d.order.id;
       $('upi-qr').classList.remove('hide');
       $('upi-open').classList.remove('hide');
-      // The exact intent the QR encodes, so tapping works on the phone itself.
       $('upi-open').href = d.upiUri || '#';
+      $('amt-warn').classList.add('hide');
+    } else if (d.upiStaticImage) {
+      // Saved bank QR: static, so it cannot carry the amount. Say so loudly.
+      $('upi-qr').src = '/api/upi-image';
+      $('upi-qr').classList.remove('hide');
+      $('upi-open').classList.add('hide');
+      $('amt-warn').classList.remove('hide');
     } else {
       $('upi-qr').classList.add('hide');
       $('upi-open').classList.add('hide');
