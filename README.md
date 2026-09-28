@@ -17,6 +17,19 @@ machine physically wired to the printer. That machine is this one.
 
 Zero npm dependencies. Node 18+ and nothing else.
 
+Four surfaces, all served by the Pi:
+
+| Path | Who uses it |
+|---|---|
+| `/` | the kiosk touchscreen — OTP keypad, and a QR code to send from a phone |
+| `/upload` | the student's phone — pick a PDF, pay, get a 6-digit code |
+| `/admin` | staff — jobs, sheets, revenue, printer health |
+| `/sim` | you — mint test orders without a real upload |
+
+See **`VERCEL.md`** for what belongs on Vercel (short version: not the printing, and for a
+LAN-only setup, nothing) and **`REPORT-COMPLIANCE.md`** for a section-by-section audit against the
+project report.
+
 ---
 
 ## Quick start (simulation — no printer needed)
@@ -28,7 +41,8 @@ PRINTER_DRIVER=mock node server.js
 
 Then:
 
-1. Open **http://localhost:8080/upload** — the student's page. Drag in any real PDF.
+1. Open **http://localhost:8080/upload** — the student's page (or scan the QR on the kiosk screen
+   from your phone). Drag in any real PDF.
    The server reads it and reports the actual page count, then prices it from that.
 2. Choose copies / colour / duplex and press **Pay & get pickup code**. A 6-digit OTP appears.
 3. Open **http://localhost:8080/** — the kiosk keypad.
@@ -114,6 +128,7 @@ Everything is an environment variable; every one has a working default.
 | `PRINT_TIMEOUT_MS` | `180000` | Give up on a stuck queue |
 | `MOCK_DURATION_MS` | `7000` | Simulated print duration |
 | `SUMATRA_PATH` | auto-detect | Windows silent PDF printing |
+| `KIOSK_HOST` | auto-detect | Force the LAN address shown in the QR code |
 | `UPLOAD_MAX_BYTES` | `26214400` | Upload limit (25 MB) |
 | `UPLOAD_MAX_PAGES` | `200` | Page limit for one job |
 
@@ -130,6 +145,8 @@ Everything is an environment variable; every one has a working default.
 | `GET` | `/api/jobs/:id` | Poll fallback if SSE drops |
 | `GET` | `/api/health` | Driver, queue and kiosk status |
 | `GET` | `/api/orders` | Order list |
+| `GET` | `/api/stats` | Dashboard metrics (KPIs, 7-day series, recent jobs) |
+| `GET` | `/api/qr` | QR code SVG for the upload URL |
 | `POST` | `/api/sim/order` | **sim only** — create a paid order |
 | `POST` | `/api/sim/quote` | **sim only** — price without ordering |
 | `POST` | `/api/sim/reset` | **sim only** — wipe everything |
@@ -161,9 +178,12 @@ src/pdf.js             PDF writer + real page counter (inflates ObjStms)
 src/multipart.js       binary-safe form-upload parser
 src/printer.js         Hardware Abstraction Layer: cups | windows | mock
 src/jobs.js            lifecycle, progress bus, shredding, error mapping
+src/qr.js              QR encoder (byte mode, ECC-M, versions 1-10)
 public/kiosk.html      the touchscreen keypad
 public/upload.html     student upload page (real PDFs, real page counts)
+public/admin.html      operations console
 public/sim.html        simulator console (generated PDFs, order list)
+public/assets/         IDEA Lab logo, favicon, shared light theme
 scripts/selftest.js    end-to-end test of the report's test cases
 scripts/testprint.js   send one page straight to the hardware
 scripts/install-pi.sh  one-shot Pi provisioning

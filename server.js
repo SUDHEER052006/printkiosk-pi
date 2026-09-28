@@ -11,6 +11,7 @@ import { priceOrder } from './src/pricing.js';
 import { generateOtp, verifyOtp, otpExpiryISO } from './src/otp.js';
 import { makePdf, countPdfPages, isPdf, isEncrypted } from './src/pdf.js';
 import { parseMultipart } from './src/multipart.js';
+import { qrSvg } from './src/qr.js';
 import { driverInfo, resolveDriver } from './src/printer.js';
 import { startJob, getJob, snapshot, bus } from './src/jobs.js';
 
@@ -23,6 +24,11 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.woff2': 'font/woff2',
   '.pdf': 'application/pdf',
 };
 
@@ -63,6 +69,41 @@ async function readJson(req) {
     throw new Error('Malformed JSON body');
   }
 }
+
+/**
+ * The address a phone on the same network should open to upload.
+ *
+ * Machines are full of adapters that look like a LAN but route nowhere a phone
+ * can reach — VirtualBox host-only, WSL, Docker, VMware, Hyper-V. Picking the
+ * first 192.168.* hands the student a QR code that cannot resolve, so score the
+ * interfaces and let the operator override outright.
+ */
+function lanAddress() {
+  if (config.publicHost) return config.publicHost;
+
+  const VIRTUAL = /virtual|vbox|vmware|hyper-v|wsl|docker|loopback|npcap|tap|tun|bluetooth/i;
+  const candidates = [];
+
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (!a || a.family !== 'IPv4' || a.internal) continue;
+      let score = 0;
+      if (VIRTUAL.test(name)) score -= 100;
+      if (/^192\.168\.56\./.test(a.address)) score -= 60;   // VirtualBox host-only default
+      if (/^172\.(1[7-9]|2\d|3[01])\./.test(a.address)) score -= 40; // Docker's usual range
+      if (/^169\.254\./.test(a.address)) score -= 80;       // link-local, no DHCP
+      if (/^192\.168\./.test(a.address)) score += 30;
+      if (/^10\./.test(a.address)) score += 25;
+      if (/wi-?fi|wlan|wireless|eth|en\d|Ethernet/i.test(name)) score += 20;
+      candidates.push({ address: a.address, name, score });
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.length ? candidates[0].address : 'localhost';
+}
+
+const uploadUrl = () => `http://${lanAddress()}:${config.port}/upload`;
 
 const clientKey = (req) =>
   (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
@@ -114,11 +155,103 @@ async function handleApi(req, res, url) {
       simEnabled: config.simEnabled,
       resetDelayMs: config.resetDelayMs,
       otpLength: config.otp.length,
+      uploadUrl: uploadUrl(),
     });
   }
 
   if (method === 'GET' && pathname === '/api/printers') {
     return json(res, 200, await driverInfo());
+  }
+
+  /* -- QR for the upload page, so a phone can join without typing -- */
+
+  if (method === 'GET' && pathname === '/api/qr') {
+    const text = url.searchParams.get('text') || uploadUrl();
+    const scale = Math.max(2, Math.min(16, Number(url.searchParams.get('scale')) || 6));
+    try {
+      const svg = qrSvg(text, { scale, dark: '#11161f', light: '#ffffff' });
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Content-Length': Buffer.byteLength(svg),
+        'Cache-Control': 'no-store',
+      });
+      return res.end(svg);
+    } catch (err) {
+      return json(res, 400, { error: err.message });
+    }
+  }
+
+  /* -- dashboard metrics -- */
+
+  if (method === 'GET' && pathname === '/api/stats') {
+    const orders = store.listOrders();
+    const docs = store.raw().documents;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const completed = orders.filter((o) => o.print_status === 'COMPLETED');
+    const todays = completed.filter((o) => (o.printed_at || '').slice(0, 10) === today);
+    const waiting = orders.filter((o) => o.print_status === 'READY_FOR_KIOSK');
+    const printing = orders.filter((o) => o.print_status === 'PRINTING');
+    const failed = orders.filter((o) => o.failure_reason && o.print_status !== 'COMPLETED');
+
+    const sheetsOf = (o) => {
+      const doc = store.getDocument(o.document_id);
+      if (!doc) return 0;
+      return (o.duplex ? Math.ceil(doc.page_count / 2) : doc.page_count) * o.copies;
+    };
+
+    // Sheets printed per day for the last 7 days, oldest first.
+    const days = [];
+    for (let i = 6; i >= 0; i -= 1) {
+      const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+      const onDay = completed.filter((o) => (o.printed_at || '').slice(0, 10) === d);
+      days.push({
+        date: d,
+        jobs: onDay.length,
+        sheets: onDay.reduce((s, o) => s + sheetsOf(o), 0),
+        revenue: onDay.reduce((s, o) => s + o.amount, 0),
+      });
+    }
+
+    return json(res, 200, {
+      kioskId: config.kioskId,
+      uptimeSec: Math.round(process.uptime()),
+      printer: await driverInfo(),
+      uploadUrl: uploadUrl(),
+      totals: {
+        jobsToday: todays.length,
+        sheetsToday: todays.reduce((s, o) => s + sheetsOf(o), 0),
+        revenueToday: todays.reduce((s, o) => s + o.amount, 0),
+        jobsAll: completed.length,
+        revenueAll: completed.reduce((s, o) => s + o.amount, 0),
+        waiting: waiting.length,
+        printing: printing.length,
+        failed: failed.length,
+        shredded: docs.filter((d) => d.deleted_at).length,
+        onDisk: docs.filter((d) => !d.deleted_at && d.storage_path).length,
+      },
+      days,
+      recent: orders.slice(0, 40).map((o) => {
+        const doc = store.getDocument(o.document_id);
+        return {
+          order_id: o.order_id,
+          created_at: o.created_at,
+          printed_at: o.printed_at,
+          amount: o.amount,
+          copies: o.copies,
+          duplex: o.duplex,
+          colour_mode: o.colour_mode,
+          paper_size: o.paper_size,
+          payment_status: o.payment_status,
+          print_status: o.print_status,
+          failure_reason: o.failure_reason,
+          sheets: sheetsOf(o),
+          filename: doc ? doc.original_filename : '(removed)',
+          pages: doc ? doc.page_count : null,
+          shredded: doc ? Boolean(doc.deleted_at) : true,
+        };
+      }),
+    });
   }
 
   /* -- kiosk OTP release -- */
@@ -464,6 +597,9 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/upload') {
       if (await serveStatic(res, '/upload.html')) return;
     }
+    if (url.pathname === '/admin') {
+      if (await serveStatic(res, '/admin.html')) return;
+    }
     if (await serveStatic(res, url.pathname)) return;
 
     json(res, 404, { error: 'Not found' });
@@ -494,7 +630,8 @@ const banner = async () => {
   console.log(`  data        ${config.dataDir}`);
   console.log('  ' + '-'.repeat(52));
   console.log(`  keypad      http://localhost:${config.port}/`);
-  console.log(`  upload      http://localhost:${config.port}/upload`);
+  console.log(`  upload      ${uploadUrl()}      <- open this on the phone`);
+  console.log(`  dashboard   http://localhost:${config.port}/admin`);
   if (config.simEnabled) console.log(`  simulator   http://localhost:${config.port}/sim`);
   for (const ip of nets) console.log(`              http://${ip}:${config.port}/`);
   console.log('');

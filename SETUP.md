@@ -18,6 +18,7 @@ Written for someone sitting in front of a Raspberry Pi with nothing installed ye
 8. [Settings reference](#8-settings-reference)
 9. [When something breaks](#9-when-something-breaks)
 10. [How the code is laid out](#10-how-the-code-is-laid-out)
+11. [Sending from a phone](#11-sending-from-a-phone)
 
 ---
 
@@ -86,7 +87,8 @@ You should see:
   printer     Mock_Canon_MF240
   ----------------------------------------------------
   keypad      http://localhost:8080/
-  upload      http://localhost:8080/upload
+  upload      http://192.168.0.118:8080/upload      <- open this on the phone
+  dashboard   http://localhost:8080/admin
   simulator   http://localhost:8080/sim
 ```
 
@@ -642,3 +644,65 @@ the Pi only makes outbound requests, which any campus firewall allows.
 **Questions this guide didn't answer?** The behaviour is all in `README.md`, and every failure mode
 prints a real error — `journalctl -u printkiosk -f` is almost always the fastest way to see what
 actually went wrong.
+
+
+---
+
+## 11. Sending from a phone
+
+This is the flow you want for a demo: **drag from the phone, type the code on the monitor.**
+
+### It already works on your Wi-Fi — no Vercel needed
+
+1. Start the agent on the Pi. The banner prints the address to use:
+
+   ```
+   upload      http://192.168.0.118:8080/upload      <- open this on the phone
+   ```
+
+2. The kiosk screen shows a **QR code** in the right-hand panel. Scan it with the phone camera —
+   it opens that address. No typing.
+
+3. Phone: pick a PDF, choose settings, **Pay & get pickup code**.
+
+4. Monitor: type the 6-digit code on the keypad. It prints.
+
+**The phone must be on the same Wi-Fi as the Pi.** Mobile data will not reach a private address like
+`192.168.x.x` — that is what `VERCEL.md` is for.
+
+### If the QR points at the wrong address
+
+Laptops often have several network adapters (VirtualBox, WSL, Docker) that look like a LAN but route
+nowhere. The agent scores them and picks the real one, but you can force it:
+
+```bash
+KIOSK_HOST=192.168.0.118 node server.js
+```
+
+Find the right address with `hostname -I` on the Pi, or `ipconfig` on Windows.
+
+### Give the Pi a fixed address
+
+Otherwise the IP changes after a reboot and every QR code you printed goes stale. Either set a DHCP
+reservation on the router (easiest), or on the Pi:
+
+```bash
+sudo nmcli con mod "preconfigured" ipv4.addresses 192.168.0.118/24   ipv4.gateway 192.168.0.1 ipv4.dns 8.8.8.8 ipv4.method manual
+sudo reboot
+```
+
+### Firewall
+
+If the phone cannot reach the page, the Pi's firewall is the usual cause:
+
+```bash
+sudo ufw allow 8080/tcp      # only if ufw is enabled
+```
+
+On Windows, allow Node through the Private network profile when prompted.
+
+### The staff dashboard
+
+`http://<pi-address>:8080/admin` — jobs today, sheets, revenue, awaiting pickup, failures, a 7-day
+chart, the full job list, printer health, and the same QR code so staff can help a student who
+cannot scan it from the kiosk.

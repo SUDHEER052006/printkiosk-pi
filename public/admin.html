@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrintKiosk Console</title>
+<link rel="icon" href="/assets/favicon.png">
+<link rel="stylesheet" href="/assets/brand.css">
+<style>
+  body { overflow-y: scroll; }
+
+  /* ------------------------------ app shell ------------------------------ */
+  .shell { display: grid; grid-template-columns: 232px minmax(0,1fr); min-height: 100vh; }
+  @media (max-width: 900px) { .shell { grid-template-columns: 1fr; } }
+
+  .rail {
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    position: sticky; top: 0; height: 100vh;
+  }
+  @media (max-width: 900px) { .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); } }
+
+  .rail .head { padding: 16px 16px 14px; border-bottom: 1px solid var(--line); }
+  .rail nav { padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+  @media (max-width: 900px) { .rail nav { flex-direction: row; overflow-x: auto; } }
+
+  .navitem {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    color: var(--ink-2);
+    font-size: 13.5px; font-weight: 500;
+    text-decoration: none;
+    border-left: 3px solid transparent;
+    white-space: nowrap;
+  }
+  .navitem:hover { background: var(--subtle); }
+  .navitem.active { background: var(--brand-soft); color: var(--brand); border-left-color: var(--brand); font-weight: 600; }
+  .navitem svg { width: 17px; height: 17px; flex: 0 0 auto; }
+  @media (max-width: 900px) { .navitem { border-left: 0; border-bottom: 3px solid transparent; } .navitem.active { border-bottom-color: var(--brand); } }
+
+  .rail .foot { margin-top: auto; padding: 14px 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--faint); }
+  @media (max-width: 900px) { .rail .foot { display: none; } }
+
+  /* ----------------------------- command bar ----------------------------- */
+  .bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 13px 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .bar h1 { margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+  .bar .sub { font-size: 12px; color: var(--dim); }
+  .bar .right { display: flex; align-items: center; gap: 10px; }
+
+  main { padding: 20px 24px 48px; display: flex; flex-direction: column; gap: 18px; }
+  @media (max-width: 640px) { main, .bar { padding-left: 14px; padding-right: 14px; } }
+
+  /* ------------------------------- kpi tiles ----------------------------- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
+    box-shadow: var(--lift-1);
+    display: flex; flex-direction: column; gap: 3px;
+    border-top: 3px solid var(--brand);
+  }
+  .tile.leaf  { border-top-color: var(--leaf); }
+  .tile.sun   { border-top-color: var(--sun); }
+  .tile.flame { border-top-color: var(--flame); }
+  .tile.cyan  { border-top-color: var(--cyan); }
+  .tile .k { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); font-weight: 600; }
+  .tile .v { font-family: var(--display); font-size: 27px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+  .tile .n { font-size: 11.5px; color: var(--faint); }
+
+  /* -------------------------------- layout ------------------------------- */
+  .split { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 18px; align-items: start; }
+  @media (max-width: 1080px) { .split { grid-template-columns: 1fr; } }
+
+  .side { display: flex; flex-direction: column; gap: 18px; }
+
+  /* --------------------------------- chart ------------------------------- */
+  .chart { width: 100%; height: 168px; display: block; }
+  .chart text { font-family: var(--ui); font-size: 10px; fill: var(--dim); }
+  .chart .gl { stroke: var(--line); stroke-width: 1; }
+
+  /* ------------------------------ device panel --------------------------- */
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
+  .kv:last-child { border-bottom: 0; }
+  .kv dt { color: var(--dim); margin: 0; }
+  .kv dd { margin: 0; font-weight: 600; text-align: right; word-break: break-word; }
+
+  .qrwrap { text-align: center; }
+  .qrwrap img { width: 168px; height: 168px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+  .qrwrap .u { font-family: var(--mono); font-size: 11.5px; color: var(--brand); margin-top: 8px; word-break: break-all; }
+
+  .empty { padding: 34px 16px; text-align: center; color: var(--dim); font-size: 13.5px; }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    appearance: none; border: 1px solid var(--line-strong); background: var(--surface);
+    color: var(--ink-2); font: inherit; font-size: 12px; font-weight: 500;
+    padding: 4px 11px; border-radius: 999px; cursor: pointer;
+  }
+  .chip:hover { background: var(--subtle); }
+  .chip.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+
+  .fname { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .fname b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+  .fname span { font-size: 11.5px; color: var(--faint); }
+
+  .banner {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 11px 14px; border-radius: var(--radius);
+    background: var(--warn-bg); color: var(--warn);
+    font-size: 13px; border: 1px solid #F0DCAE;
+  }
+  .banner svg { width: 17px; height: 17px; flex: 0 0 auto; margin-top: 1px; }
+  .banner a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ------------------------------- rail ------------------------------- -->
+  <aside class="rail">
+    <div class="head">
+      <div class="brandbar">
+        <img src="/assets/idealab-mark.png" alt="AICTE IDEA Lab">
+        <div class="titles">
+          <div class="product">PRINT<b>KIOSK</b></div>
+          <div class="org">AICTE IDEA Lab</div>
+        </div>
+      </div>
+    </div>
+
+    <nav>
+      <a class="navitem active" href="#overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Overview
+      </a>
+      <a class="navitem" href="#jobs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        Print jobs
+      </a>
+      <a class="navitem" href="/upload" target="_blank">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 9l5-5 5 5"/><path d="M12 4v12"/></svg>
+        Upload page
+      </a>
+      <a class="navitem" href="/" target="_blank">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        Kiosk screen
+      </a>
+    </nav>
+
+    <div class="foot">
+      <div id="rail-kiosk">kiosk</div>
+      <div id="rail-uptime">uptime —</div>
+    </div>
+  </aside>
+
+  <!-- ------------------------------- main ------------------------------- -->
+  <div>
+    <div class="bar">
+      <div>
+        <h1>Operations console</h1>
+        <div class="sub" id="bar-sub">Loading…</div>
+      </div>
+      <div class="right">
+        <span class="pill idle" id="printer-pill">checking</span>
+        <button class="btn secondary" id="refresh" type="button">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+
+    <main>
+      <div id="sim-banner" class="banner hide">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <div>
+          <b>Simulation mode.</b> No paper is moving, and <code>/sim</code> can mint paid orders for free.
+          Set <code>SIM_ENABLED=false</code> and connect a printer before students use this kiosk.
+        </div>
+      </div>
+
+      <section id="overview">
+        <div class="tiles">
+          <div class="tile">      <div class="k">Jobs today</div>    <div class="v" id="t-jobs">—</div>   <div class="n" id="t-jobs-n">&nbsp;</div></div>
+          <div class="tile leaf"> <div class="k">Sheets today</div>  <div class="v" id="t-sheets">—</div> <div class="n" id="t-sheets-n">&nbsp;</div></div>
+          <div class="tile sun">  <div class="k">Revenue today</div> <div class="v" id="t-rev">—</div>    <div class="n" id="t-rev-n">&nbsp;</div></div>
+          <div class="tile cyan"> <div class="k">Awaiting pickup</div><div class="v" id="t-wait">—</div>   <div class="n" id="t-wait-n">&nbsp;</div></div>
+          <div class="tile flame"><div class="k">Failed</div>        <div class="v" id="t-fail">—</div>   <div class="n" id="t-fail-n">&nbsp;</div></div>
+        </div>
+      </section>
+
+      <div class="split">
+        <div style="display:flex;flex-direction:column;gap:18px;">
+          <div class="card">
+            <header>
+              <h2>Sheets printed · last 7 days</h2>
+              <span class="dim" style="font-size:12px;" id="chart-total"></span>
+            </header>
+            <div class="body">
+              <svg class="chart" id="chart" viewBox="0 0 700 168" preserveAspectRatio="none" role="img" aria-label="Sheets printed per day"></svg>
+            </div>
+          </div>
+
+          <div class="card" id="jobs">
+            <header>
+              <h2>Print jobs</h2>
+              <div class="filters" id="filters">
+                <button class="chip on" data-f="all" type="button">All</button>
+                <button class="chip" data-f="READY_FOR_KIOSK" type="button">Awaiting pickup</button>
+                <button class="chip" data-f="PRINTING" type="button">Printing</button>
+                <button class="chip" data-f="COMPLETED" type="button">Completed</button>
+              </div>
+            </header>
+            <div class="scroll-x">
+              <table class="grid">
+                <thead>
+                  <tr>
+                    <th>Order</th><th>Document</th><th>Spec</th>
+                    <th style="text-align:right;">Sheets</th><th style="text-align:right;">Amount</th>
+                    <th>Status</th><th>File</th>
+                  </tr>
+                </thead>
+                <tbody id="rows"></tbody>
+              </table>
+            </div>
+            <div class="empty hide" id="empty">No print jobs yet.</div>
+          </div>
+        </div>
+
+        <div class="side">
+          <div class="card">
+            <header><h2>Send from a phone</h2></header>
+            <div class="body qrwrap">
+              <img id="qr" alt="Scan to open the upload page">
+              <div class="u" id="qr-url">—</div>
+              <div class="dim" style="font-size:11.5px;margin-top:6px;">
+                Phone must be on the same Wi-Fi as this kiosk.
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <header><h2>Device</h2></header>
+            <div class="body">
+              <dl style="margin:0;">
+                <div class="kv"><dt>Kiosk</dt><dd id="d-kiosk">—</dd></div>
+                <div class="kv"><dt>Driver</dt><dd id="d-driver">—</dd></div>
+                <div class="kv"><dt>Printer</dt><dd id="d-printer">—</dd></div>
+                <div class="kv"><dt>Queues</dt><dd id="d-queues">—</dd></div>
+                <div class="kv"><dt>Uptime</dt><dd id="d-uptime">—</dd></div>
+              </dl>
+            </div>
+          </div>
+
+          <div class="card">
+            <header><h2>Document privacy</h2></header>
+            <div class="body">
+              <dl style="margin:0;">
+                <div class="kv"><dt>Shredded after print</dt><dd id="d-shred">—</dd></div>
+                <div class="kv"><dt>Currently on disk</dt><dd id="d-ondisk">—</dd></div>
+                <div class="kv"><dt>Lifetime jobs</dt><dd id="d-all">—</dd></div>
+                <div class="kv"><dt>Lifetime revenue</dt><dd id="d-allrev">—</dd></div>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  let filter = 'all';
+  let latest = null;
+
+  const rupees = (n) => 'Rs. ' + Number(n || 0).toLocaleString('en-IN');
+
+  const uptime = (s) => {
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm';
+    const h = Math.floor(s / 3600);
+    return h + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+  };
+
+  const STATUS = {
+    COMPLETED:       ['ok',   'Completed'],
+    READY_FOR_KIOSK: ['info', 'Awaiting pickup'],
+    PRINTING:        ['warn', 'Printing'],
+    CREATED:         ['idle', 'Unpaid'],
+  };
+
+  /* --------------------------------- chart -------------------------------- */
+
+  function drawChart(days) {
+    const svg = $('chart');
+    const W = 700, H = 168, padL = 38, padR = 10, padT = 12, padB = 26;
+    const max = Math.max(4, ...days.map((d) => d.sheets));
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const bw = innerW / days.length;
+
+    const ticks = 4;
+    let out = '';
+    for (let i = 0; i <= ticks; i += 1) {
+      const v = Math.round((max / ticks) * i);
+      const y = padT + innerH - (innerH * i) / ticks;
+      out += `<line class="gl" x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}"/>`;
+      out += `<text x="${padL - 8}" y="${y + 3.5}" text-anchor="end">${v}</text>`;
+    }
+
+    days.forEach((d, i) => {
+      const h = max ? (d.sheets / max) * innerH : 0;
+      const x = padL + i * bw + bw * 0.24;
+      const w = bw * 0.52;
+      const y = padT + innerH - h;
+      const today = i === days.length - 1;
+      out += `<rect x="${x}" y="${y}" width="${w}" height="${Math.max(h, d.sheets ? 2 : 0)}" rx="3" ` +
+             `fill="${today ? 'var(--brand)' : 'var(--cyan)'}" opacity="${today ? 1 : .75}"><title>` +
+             `${d.date}: ${d.sheets} sheets, ${d.jobs} jobs</title></rect>`;
+      if (d.sheets) {
+        out += `<text x="${x + w / 2}" y="${y - 5}" text-anchor="middle" style="font-weight:600;fill:var(--ink-2)">${d.sheets}</text>`;
+      }
+      const label = new Date(d.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short' });
+      out += `<text x="${x + w / 2}" y="${H - 8}" text-anchor="middle">${today ? 'Today' : label}</text>`;
+    });
+
+    svg.innerHTML = out;
+  }
+
+  /* --------------------------------- rows --------------------------------- */
+
+  function drawRows(recent) {
+    const list = filter === 'all' ? recent : recent.filter((r) => r.print_status === filter);
+    const tb = $('rows');
+
+    if (!list.length) {
+      tb.innerHTML = '';
+      $('empty').classList.remove('hide');
+      $('empty').textContent = recent.length ? 'No jobs match this filter.' : 'No print jobs yet.';
+      return;
+    }
+    $('empty').classList.add('hide');
+
+    tb.innerHTML = list.map((r) => {
+      const [cls, label] = STATUS[r.print_status] || ['bad', r.print_status];
+      const spec = [
+        r.pages ? r.pages + 'p' : '—',
+        r.copies + '×',
+        r.duplex ? 'duplex' : 'single',
+        r.colour_mode === 'colour' ? 'colour' : 'B&W',
+        r.paper_size,
+      ].join(' · ');
+      const esc = (s) => String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+      const when = r.printed_at || r.created_at;
+      const time = when ? new Date(when).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+      return '<tr>' +
+        `<td class="mono" style="font-size:12px;">${esc(r.order_id)}</td>` +
+        `<td><div class="fname"><b>${esc(r.filename)}</b><span>${time}</span></div></td>` +
+        `<td class="dim">${spec}</td>` +
+        `<td class="num" style="text-align:right;">${r.sheets}</td>` +
+        `<td class="num" style="text-align:right;">${rupees(r.amount)}</td>` +
+        `<td><span class="pill ${cls}">${label}</span>` +
+          (r.failure_reason && r.print_status !== 'COMPLETED'
+            ? `<div class="dim" style="font-size:11px;margin-top:3px;">last error logged</div>` : '') +
+        '</td>' +
+        `<td>${r.shredded
+            ? '<span class="pill ok">shredded</span>'
+            : '<span class="pill idle">on disk</span>'}</td>` +
+      '</tr>';
+    }).join('');
+  }
+
+  /* --------------------------------- load --------------------------------- */
+
+  async function load() {
+    let s;
+    try {
+      const r = await fetch('/api/stats');
+      s = await r.json();
+    } catch {
+      $('bar-sub').textContent = 'Cannot reach the kiosk agent.';
+      $('printer-pill').className = 'pill bad';
+      $('printer-pill').textContent = 'agent offline';
+      return;
+    }
+    latest = s;
+    const t = s.totals;
+    const p = s.printer || {};
+
+    $('t-jobs').textContent = t.jobsToday;
+    $('t-jobs-n').textContent = t.jobsAll + ' all time';
+    $('t-sheets').textContent = t.sheetsToday;
+    $('t-sheets-n').textContent = 'paper used today';
+    $('t-rev').textContent = rupees(t.revenueToday);
+    $('t-rev-n').textContent = rupees(t.revenueAll) + ' all time';
+    $('t-wait').textContent = t.waiting;
+    $('t-wait-n').textContent = t.printing ? t.printing + ' printing now' : 'codes not yet entered';
+    $('t-fail').textContent = t.failed;
+    $('t-fail-n').textContent = t.failed ? 'needs attention' : 'none';
+
+    $('bar-sub').textContent =
+      `${s.kioskId} · ${p.simulated ? 'simulation mode' : (p.activePrinter || 'no printer')}`;
+    $('printer-pill').className = 'pill ' + (p.simulated ? 'warn' : (p.activePrinter ? 'ok' : 'bad'));
+    $('printer-pill').textContent = p.simulated ? 'simulation' : (p.activePrinter ? 'printer ready' : 'no printer');
+    $('sim-banner').classList.toggle('hide', !p.simulated);
+
+    $('d-kiosk').textContent = s.kioskId;
+    $('d-driver').textContent = p.driver || '—';
+    $('d-printer').textContent = p.activePrinter || 'system default';
+    $('d-queues').textContent = (p.printers && p.printers.length) ? p.printers.join(', ') : 'none detected';
+    $('d-uptime').textContent = uptime(s.uptimeSec);
+    $('rail-kiosk').textContent = s.kioskId;
+    $('rail-uptime').textContent = 'uptime ' + uptime(s.uptimeSec);
+
+    $('d-shred').textContent = t.shredded;
+    $('d-ondisk').textContent = t.onDisk;
+    $('d-all').textContent = t.jobsAll;
+    $('d-allrev').textContent = rupees(t.revenueAll);
+
+    $('qr-url').textContent = s.uploadUrl;
+    const want = '/api/qr?scale=6&text=' + encodeURIComponent(s.uploadUrl);
+    if ($('qr').getAttribute('src') !== want) $('qr').src = want;
+
+    const total = s.days.reduce((a, d) => a + d.sheets, 0);
+    $('chart-total').textContent = total + ' sheets this week';
+    drawChart(s.days);
+    drawRows(s.recent);
+  }
+
+  $('filters').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    filter = chip.dataset.f;
+    for (const c of $('filters').children) c.classList.toggle('on', c === chip);
+    if (latest) drawRows(latest.recent);
+  });
+
+  $('refresh').addEventListener('click', load);
+
+  document.querySelectorAll('.navitem[href^="#"]').forEach((a) => {
+    a.addEventListener('click', () => {
+      document.querySelectorAll('.navitem').forEach((n) => n.classList.remove('active'));
+      a.classList.add('active');
+    });
+  });
+
+  load();
+  setInterval(load, 4000);
+})();
+</script>
+</body>
+</html>
