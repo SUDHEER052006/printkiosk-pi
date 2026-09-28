@@ -4,6 +4,8 @@
  * and no npm install on the Pi.
  */
 
+import zlib from 'node:zlib';
+
 const BACKSLASH = String.fromCharCode(92);
 
 const esc = (s) =>
@@ -112,13 +114,133 @@ export function makePdf({
   return Buffer.concat(chunks);
 }
 
-/** Page counter for PDFs arriving from the web app (mirrors what pdf-parse does). */
+/* ========================================================================== *
+ *  Page counting for real uploads
+ * ========================================================================== */
+
+/**
+ * Returns [start, end) of the `<< ... >>` dictionary containing `idx`, matching
+ * nesting properly. A page-tree node's /Kids array can run for kilobytes, so a
+ * fixed character window around /Type /Pages routinely lands in a *neighbouring*
+ * node and reads the wrong /Count — which silently prices the wrong page count.
+ */
+function enclosingDict(text, idx) {
+  let depth = 0;
+  let start = -1;
+  for (let i = idx; i >= 1; i -= 1) {
+    if (text[i] === '>' && text[i - 1] === '>') { depth += 1; i -= 1; continue; }
+    if (text[i] === '<' && text[i - 1] === '<') {
+      if (depth === 0) { start = i - 1; break; }
+      depth -= 1; i -= 1;
+    }
+  }
+  if (start < 0) return null;
+
+  depth = 0;
+  for (let i = start; i < text.length - 1; i += 1) {
+    if (text[i] === '<' && text[i + 1] === '<') { depth += 1; i += 1; continue; }
+    if (text[i] === '>' && text[i + 1] === '>') {
+      depth -= 1;
+      if (depth === 0) return [start, i + 2];
+      i += 1;
+    }
+  }
+  return null;
+}
+
+/** /Count read from the node's own dictionary — the root holds the largest. */
+function scanPageTree(text) {
+  const counts = [];
+  const re = /\/Type\s*\/Pages\b/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const span = enclosingDict(text, m.index);
+    if (!span) continue;
+    // Read /Count at this dict's own depth, not from a nested child dict.
+    const dict = text.slice(span[0], span[1]);
+    const c = dict.match(/\/Count\s+(\d+)/);
+    if (c) counts.push(Number(c[1]));
+  }
+  return counts.length ? Math.max(...counts) : 0;
+}
+
+/**
+ * PDF 1.5+ hides the catalog and page tree inside compressed object streams
+ * (/Type /ObjStm), so a plain text scan finds nothing in perfectly ordinary
+ * files from Word, Chrome or LaTeX. Node ships zlib, so we inflate just those
+ * streams — never image data — and scan what comes out.
+ */
+function inflateObjectStreams(buf) {
+  const hay = buf.toString('latin1');
+  const out = [];
+  const re = /\/ObjStm\b/g;
+  let m;
+
+  while ((m = re.exec(hay)) !== null) {
+    const span = enclosingDict(hay, m.index);
+    if (!span) continue;
+    const dict = hay.slice(span[0], span[1]);
+    if (!/\/FlateDecode/.test(dict)) continue;
+
+    // The stream keyword follows the dictionary, then a CRLF or LF.
+    const kw = hay.indexOf('stream', span[1]);
+    if (kw < 0 || kw > span[1] + 40) continue;
+    let start = kw + 6;
+    if (hay[start] === '\r') start += 1;
+    if (hay[start] === '\n') start += 1;
+
+    // Prefer the declared /Length; fall back to the endstream marker.
+    const lenMatch = dict.match(/\/Length\s+(\d+)\b/);
+    const byLength = lenMatch ? start + Number(lenMatch[1]) : -1;
+    const byMarker = hay.indexOf('endstream', start);
+    const candidates = [byLength, byMarker].filter((e) => e > start);
+
+    for (const end of candidates) {
+      try {
+        out.push(zlib.inflateSync(buf.subarray(start, end)).toString('latin1'));
+        break;
+      } catch {
+        try {
+          out.push(zlib.inflateRawSync(buf.subarray(start, end)).toString('latin1'));
+          break;
+        } catch { /* try the next boundary */ }
+      }
+    }
+  }
+  return out.join('\n');
+}
+
+export function isPdf(buf) {
+  return Buffer.isBuffer(buf) && buf.length > 4 && buf.subarray(0, 5).toString('latin1') === '%PDF-';
+}
+
+export function isEncrypted(buf) {
+  return /\/Encrypt\s+\d+\s+\d+\s+R/.test(buf.toString('latin1', 0, Math.min(buf.length, 4_000_000)));
+}
+
+/**
+ * Counts pages in a real uploaded PDF. Three passes, cheapest first:
+ *   1. page tree in plain text            (most PDFs)
+ *   2. page tree inside inflated ObjStms  (PDF 1.5+ / Word / Chrome)
+ *   3. count /Type /Page leaves           (last resort, damaged files)
+ * Returns 0 when it genuinely cannot tell, so the caller can reject the upload
+ * rather than silently charge for the wrong number of sheets.
+ */
 export function countPdfPages(buf) {
-  const s = buf.toString('latin1');
-  const counts = [...s.matchAll(/\/Type\s*\/Pages[^>]*?\/Count\s+(\d+)/g)].map((m) => Number(m[1]));
-  if (counts.length) return Math.max(...counts);
-  const pages = (s.match(/\/Type\s*\/Page[^s]/g) || []).length;
-  return pages || 1;
+  if (!isPdf(buf)) return 0;
+  const text = buf.toString('latin1');
+
+  const direct = scanPageTree(text);
+  if (direct > 0) return direct;
+
+  const inflated = inflateObjectStreams(buf);
+  if (inflated) {
+    const fromStreams = scanPageTree(inflated);
+    if (fromStreams > 0) return fromStreams;
+  }
+
+  const leaves = (text.match(/\/Type\s*\/Page[^s]/g) || []).length;
+  return leaves > 0 ? leaves : 0;
 }
 
 export default makePdf;

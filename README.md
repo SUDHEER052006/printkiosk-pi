@@ -28,12 +28,16 @@ PRINTER_DRIVER=mock node server.js
 
 Then:
 
-1. Open **http://localhost:8080/sim** — this stands in for the phone app and the Razorpay webhook.
-2. Set pages/copies/duplex, click **Create paid order**. It shows a 6-digit OTP.
+1. Open **http://localhost:8080/upload** — the student's page. Drag in any real PDF.
+   The server reads it and reports the actual page count, then prices it from that.
+2. Choose copies / colour / duplex and press **Pay & get pickup code**. A 6-digit OTP appears.
 3. Open **http://localhost:8080/** — the kiosk keypad.
 4. Type the OTP, press **RELEASE MY PRINTOUT**, and watch the job run.
 
-In mock mode a receipt and a copy of the document land in `data/mock-prints/`.
+**http://localhost:8080/sim** is the shortcut path: it mints orders against a generated PDF and
+lists every order with its status — handy for repeat tests.
+
+In mock mode a receipt and a byte-identical copy of the printed document land in `data/mock-prints/`.
 
 Prove the whole pipeline in one command:
 
@@ -45,12 +49,18 @@ node scripts/selftest.js
   PASS  agent is up
   PASS  TC-02 duplex math  5p x2 duplex = 6 sheets, Rs.18
   PASS  report example    7p x2 duplex = 8 sheets, Rs.24
+  PASS  upload accepts a real PDF and counts its pages
+  PASS  TC-03 non-PDF content rejected
+  PASS  TC-03 .exe extension rejected
+  PASS  uploaded doc priced from the STORED page count
   PASS  TC-01 order created + pages parsed
   PASS  TC-06 wrong OTP rejected
   PASS  TC-05 correct OTP releases job
   PASS  job reached COMPLETED
   PASS  TC-07 document shredded after print
   PASS  OTP cannot be reused
+
+  16 passed, 0 failed
 ```
 
 ---
@@ -59,8 +69,12 @@ node scripts/selftest.js
 
 ```bash
 node scripts/list-printers.js          # find the exact queue name
+node scripts/testprint.js --printer "Canon_MF240"   # one page, straight to the hardware
 PRINTER_NAME="Canon_MF240" node server.js
 ```
+
+`testprint.js` bypasses the server, the OTP and the order entirely — it is the fastest way to tell a
+printer problem from a software problem when you first plug the hardware in.
 
 Drop `PRINTER_DRIVER` entirely and the agent auto-detects: CUPS on Linux/Pi/macOS, the Windows
 spooler on Windows, mock if neither is present. Anything other than `mock` prints for real.
@@ -100,6 +114,8 @@ Everything is an environment variable; every one has a working default.
 | `PRINT_TIMEOUT_MS` | `180000` | Give up on a stuck queue |
 | `MOCK_DURATION_MS` | `7000` | Simulated print duration |
 | `SUMATRA_PATH` | auto-detect | Windows silent PDF printing |
+| `UPLOAD_MAX_BYTES` | `26214400` | Upload limit (25 MB) |
+| `UPLOAD_MAX_PAGES` | `200` | Page limit for one job |
 
 ---
 
@@ -107,6 +123,8 @@ Everything is an environment variable; every one has a working default.
 
 | Method | Path | Purpose |
 |---|---|---|
+| `POST` | `/api/upload` | Upload a real PDF; returns the parsed page count |
+| `POST` | `/api/orders` | Price and create an order from an uploaded document |
 | `POST` | `/api/kiosk/verify-otp` | Release a paid job — the keypad's only write |
 | `GET` | `/api/jobs/:id/events` | SSE live progress (drives the screen) |
 | `GET` | `/api/jobs/:id` | Poll fallback if SSE drops |
@@ -139,12 +157,15 @@ src/config.js          env-var configuration
 src/store.js           documents + orders  (swap this for Supabase)
 src/pricing.js         report section 7 sheet maths, server-authoritative
 src/otp.js             generation, constant-time match, progressive backoff
-src/pdf.js             dependency-free PDF writer for simulation
+src/pdf.js             PDF writer + real page counter (inflates ObjStms)
+src/multipart.js       binary-safe form-upload parser
 src/printer.js         Hardware Abstraction Layer: cups | windows | mock
 src/jobs.js            lifecycle, progress bus, shredding, error mapping
 public/kiosk.html      the touchscreen keypad
-public/sim.html        simulator console (phone app + Razorpay stand-in)
+public/upload.html     student upload page (real PDFs, real page counts)
+public/sim.html        simulator console (generated PDFs, order list)
 scripts/selftest.js    end-to-end test of the report's test cases
+scripts/testprint.js   send one page straight to the hardware
 scripts/install-pi.sh  one-shot Pi provisioning
 ```
 
@@ -164,4 +185,20 @@ scripts/install-pi.sh  one-shot Pi provisioning
   cost a student their money.
 - **Errors are mapped before display.** Raw messages leak filesystem paths onto a public screen; the
   technical text goes to the journal, a friendly line goes to the student.
-- **Set `SIM_ENABLED=false` on a real kiosk.** Otherwise `/sim` will mint free paid orders.
+- **Set `SIM_ENABLED=false` on a real kiosk.** Otherwise `/sim` mints free paid orders, and
+  `/api/orders` marks new orders paid without a verified payment.
+- **Uploads are validated by magic bytes, not by filename.** A `.pdf` that is really an executable
+  is rejected; so are password-protected PDFs, whose pages cannot be counted and therefore cannot be
+  priced honestly.
+- **Stored filenames are UUIDs.** The student's own filename never reaches the filesystem, which
+  closes the path-traversal route the report calls out.
+
+## Page counting
+
+`countPdfPages()` is validated against **pypdf across 44 real-world PDFs** — Word exports, LaTeX,
+scanner output, Chrome print-to-PDF — with an exact match on all 44 in 126ms total. It reads the
+page tree from the document's own dictionary (matching `<< >>` nesting, because a `/Kids` array can
+run for kilobytes and a fixed character window reads a neighbouring node's `/Count`), and inflates
+`/Type /ObjStm` compressed object streams with `zlib` for PDF 1.5+ files that keep the page tree
+compressed. It returns `0` rather than a guess when it genuinely cannot tell, so the upload is
+rejected instead of the student being charged for the wrong number of sheets.

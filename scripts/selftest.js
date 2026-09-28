@@ -71,6 +71,45 @@ async function waitForJob(jobId, timeoutMs = 240000) {
   const q3 = await post('/api/sim/quote', { pages: 10, copies: 1, duplex: false, colourMode: 'colour' });
   ok('colour single     10p x1 = Rs.100', q3.body.amount === 100, `got Rs.${q3.body.amount}`);
 
+  /* -- real upload path: a genuine PDF, parsed for real -- */
+  {
+    const { makePdf } = await import('../src/pdf.js');
+    const pdf = makePdf({ pageCount: 9, title: 'Upload Path Test' });
+
+    const upRes = await fetch(BASE + '/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/pdf', 'X-Filename': 'upload-test.pdf' },
+      body: pdf,
+    });
+    const up = await upRes.json();
+    ok('upload accepts a real PDF and counts its pages',
+       upRes.status === 201 && up.pageCount === 9,
+       up.pageCount ? `${up.pageCount} pages in ${up.parseMs}ms` : (up.error || ''));
+
+    const notPdf = await fetch(BASE + '/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/pdf', 'X-Filename': 'notreally.pdf' },
+      body: Buffer.from('plain text wearing a .pdf extension'),
+    });
+    ok('TC-03 non-PDF content rejected', notPdf.status === 400);
+
+    const exe = await fetch(BASE + '/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/pdf', 'X-Filename': 'malware.exe' },
+      body: Buffer.from('MZ'),
+    });
+    ok('TC-03 .exe extension rejected', exe.status === 400);
+
+    if (upRes.status === 201) {
+      const ordered = await post('/api/orders',
+        { documentId: up.documentId, copies: 2, duplex: true, colourMode: 'bw' });
+      // 9 pages duplex -> ceil(9/2)=5 sheets/copy x2 = 10 sheets x Rs.3 = Rs.30
+      ok('uploaded doc priced from the STORED page count',
+         ordered.status === 201 && ordered.body.quote.totalSheets === 10 && ordered.body.order.amount === 30,
+         `${ordered.body.quote && ordered.body.quote.totalSheets} sheets / Rs.${ordered.body.order && ordered.body.order.amount}`);
+    }
+  }
+
   /* -- order creation -- */
   const created = await post('/api/sim/order',
     { pages: 2, copies: 1, duplex: false, colourMode: 'bw', title: 'Self Test' });

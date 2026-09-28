@@ -49,6 +49,12 @@ export const config = {
     strikeDecayMs: num(env.OTP_STRIKE_DECAY_MS, 30 * 60 * 1000),
   },
 
+  upload: {
+    maxBytes: num(env.UPLOAD_MAX_BYTES, 25 * 1024 * 1024),
+    maxPages: num(env.UPLOAD_MAX_PAGES, 200),
+    allowedExtensions: ['.pdf'],
+  },
+
   // zero-trace shredding after a successful print
   shredOnComplete: bool(env.SHRED_ON_COMPLETE, true),
 

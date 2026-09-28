@@ -86,29 +86,54 @@ You should see:
   printer     Mock_Canon_MF240
   ----------------------------------------------------
   keypad      http://localhost:8080/
+  upload      http://localhost:8080/upload
   simulator   http://localhost:8080/sim
 ```
 
 Leave this terminal running. It's the server.
 
-### 2.3 Walk through the flow
+### 2.3 Walk through the flow with a real PDF
 
 Open **two browser tabs**:
 
-**Tab 1 — http://localhost:8080/sim**
+**Tab 1 — http://localhost:8080/upload**
 
-This tab pretends to be the student's phone *and* the Razorpay payment. In a real deployment this
-is the Vercel web app; here it's a shortcut so you can test without money changing hands.
+This is the student's page. Drag in **any real PDF from your computer**. The server reads the file,
+counts its actual pages, and prices it from that count — nothing is faked:
 
-Set pages / copies / duplex, then click **Create paid order**. A 6-digit code appears, like `483920`.
+```
+  assignment.pdf
+  842 KB · 19 pages · parsed in 2ms
+```
+
+Pick copies / colour / double-sided, watch the amount update, then **Pay & get pickup code**. A
+6-digit code appears, like `483920`.
 
 **Tab 2 — http://localhost:8080/**
 
 This is the actual kiosk keypad — what shows on the Pi's touchscreen. Type the 6-digit code and
 press **RELEASE MY PRINTOUT**.
 
-Watch it run: `Sending to printer → Queued → Printing sheet 1 of 4 → Erasing your document →
+Watch it run: `Sending to printer → Queued → Printing sheet 1 of 20 → Erasing your document →
 Collect your printout`.
+
+> **http://localhost:8080/sim** is the other tab worth knowing: it mints test orders with a
+> generated PDF instead of a real upload, and lists every order with its status. Useful for quick
+> repeat tests; the upload page is the honest end-to-end path.
+
+**What actually happens to your PDF:** it's stored under a random UUID filename (your filename never
+touches the filesystem), priced from the page count the *server* read, printed byte-for-byte as you
+uploaded it, then deleted from disk the instant the job completes.
+
+**What gets rejected, and why:**
+
+| You upload | Response |
+|---|---|
+| `notes.exe`, `run.sh`, `photo.jpg` | `400` — extension not allowed |
+| A `.pdf` that isn't really a PDF | `400` — checked by magic bytes, not the name |
+| A password-protected PDF | `400` — pages can't be counted, so it can't be priced |
+| An empty file | `400` — the file was empty |
+| Over 25 MB, or over 200 pages | `413` / `422` with the limit named |
 
 ### 2.4 Prove it works
 
@@ -122,6 +147,11 @@ This runs the test cases from your project report end to end:
   PASS  agent is up
   PASS  TC-02 duplex math  5p x2 duplex = 6 sheets, Rs.18
   PASS  report example    7p x2 duplex = 8 sheets, Rs.24
+  PASS  colour single     10p x1 = Rs.100
+  PASS  upload accepts a real PDF and counts its pages   9 pages in 1ms
+  PASS  TC-03 non-PDF content rejected
+  PASS  TC-03 .exe extension rejected
+  PASS  uploaded doc priced from the STORED page count   10 sheets / Rs.30
   PASS  TC-01 order created + pages parsed
   PASS  TC-06 wrong OTP rejected
   PASS  short OTP rejected
@@ -131,7 +161,7 @@ This runs the test cases from your project report end to end:
   PASS  order marked COMPLETED
   PASS  OTP cannot be reused
 
-  12 passed, 0 failed
+  16 passed, 0 failed
 ```
 
 **Screenshot this for your report.** It's direct evidence for your testing chapter.
@@ -258,6 +288,36 @@ Output:
 
 ## 5. Print for real
 
+### 5.1 Prove the printer works first
+
+Before involving the kiosk at all, send one page straight to the hardware:
+
+```bash
+node scripts/testprint.js --printer "Canon_MF240"
+```
+
+```
+  driver    cups
+  printer   Canon_MF240
+
+  sending...
+     20%  SPOOLING   Sending to Canon_MF240
+     40%  SPOOLED    Queued as Canon_MF240-42
+     92%  PRINTING   Printing sheets
+     96%  PRINTED    Sheets delivered
+
+  done in 8.4s  ·  job Canon_MF240-42
+  Check the printer tray.
+```
+
+If a page comes out, the hardware path is good and everything else is software. If it fails, the
+script prints the exact diagnostic commands to run next.
+
+Add `--duplex`, `--colour`, `--pages 3`, `--copies 2` to test those specifically — worth doing, since
+duplex is the setting most likely to be unsupported by a given driver.
+
+### 5.2 Then run the kiosk against it
+
 ```bash
 cd ~/printkiosk-pi
 PRINTER_NAME="Canon_MF240" node server.js
@@ -286,6 +346,9 @@ node scripts/seed.js --pages 2
 Type `847213` on the keypad at `http://localhost:8080/`.
 
 **Paper should come out of the printer.**
+
+Or do it with a real document: open `http://localhost:8080/upload` on your phone (use the Pi's IP,
+e.g. `http://192.168.0.118:8080/upload`), drag in a PDF, pay, and type the code on the kiosk.
 
 Or run the whole test suite against real hardware — it will genuinely print:
 
@@ -413,6 +476,8 @@ Set these before `node server.js`, or in the systemd file for a permanent instal
 | `PRINT_TIMEOUT_MS` | `180000` | Give up on a stuck printer (3 min) |
 | `MOCK_DURATION_MS` | `7000` | How long a fake print takes |
 | `DATA_DIR` | `./data` | Where documents and records live |
+| `UPLOAD_MAX_BYTES` | `26214400` | Upload size limit (25 MB) |
+| `UPLOAD_MAX_PAGES` | `200` | Page limit for one job |
 
 Example — different port, no simulator, specific printer:
 
@@ -475,6 +540,24 @@ sudo systemctl restart cups
 
 Check the obvious too: paper, toner, printer's own error light, USB cable.
 
+### Windows: a print dialog opens instead of printing silently
+
+Windows has no built-in way to print a PDF from the command line without a helper. Install
+SumatraPDF once and the agent finds it automatically:
+
+```powershell
+winget install SumatraPDF.SumatraPDF
+```
+
+Or set `SUMATRA_PATH` to a portable copy. This does not apply to the Raspberry Pi — CUPS prints
+directly, which is why the Pi is the deployment target.
+
+### Upload says "page count could not be read"
+
+The PDF is damaged or unusually built. Open it and re-save it (any viewer's Print → Save as PDF
+works), then upload again. Password-protected PDFs are rejected on purpose: pages can't be counted
+through the encryption, so the job can't be priced honestly.
+
 ### Printer prints garbage or blank pages
 
 Wrong driver. Go back to `http://localhost:631` → **Administration → Manage Printers** → your
@@ -530,11 +613,14 @@ src/otp.js              code generation, secure matching, brute-force guard
 src/pdf.js              makes test PDFs (so simulation needs no sample files)
 src/printer.js          talks to CUPS / Windows / mock
 src/jobs.js             job lifecycle, progress, shredding, error messages
+src/multipart.js        binary-safe form-upload parser
 public/kiosk.html       the touchscreen keypad
-public/sim.html         the simulator (stands in for phone + Razorpay)
+public/upload.html      the student's upload page (real PDFs)
+public/sim.html         the simulator (generated PDFs, order list)
 scripts/selftest.js     the test suite
 scripts/seed.js         make one order quickly from the terminal
 scripts/list-printers.js  find your queue name
+scripts/testprint.js    send one page straight to the hardware
 scripts/install-pi.sh   sets up the whole Pi in one command
 ```
 

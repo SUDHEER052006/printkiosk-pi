@@ -9,7 +9,8 @@ import config from './src/config.js';
 import * as store from './src/store.js';
 import { priceOrder } from './src/pricing.js';
 import { generateOtp, verifyOtp, otpExpiryISO } from './src/otp.js';
-import { makePdf, countPdfPages } from './src/pdf.js';
+import { makePdf, countPdfPages, isPdf, isEncrypted } from './src/pdf.js';
+import { parseMultipart } from './src/multipart.js';
 import { driverInfo, resolveDriver } from './src/printer.js';
 import { startJob, getJob, snapshot, bus } from './src/jobs.js';
 
@@ -220,6 +221,140 @@ async function handleApi(req, res, url) {
     return json(res, 200, { orders });
   }
 
+  /* -- real upload: a genuine PDF from the student's device -- */
+
+  if (method === 'POST' && pathname === '/api/upload') {
+    let raw;
+    try {
+      raw = await readBody(req, config.upload.maxBytes);
+    } catch (err) {
+      return json(res, 413, {
+        error: `File too large. Limit is ${Math.round(config.upload.maxBytes / 1024 / 1024)} MB.`,
+      });
+    }
+
+    // Accept both a real form post and a raw PUT-style body from fetch().
+    let filename = decodeURIComponent(req.headers['x-filename'] || '');
+    let data = raw;
+    const ctype = req.headers['content-type'] || '';
+
+    if (ctype.startsWith('multipart/form-data')) {
+      let parsed;
+      try {
+        parsed = parseMultipart(raw, ctype);
+      } catch (err) {
+        return json(res, 400, { error: 'Could not read the upload: ' + err.message });
+      }
+      const file = parsed.files.find((f) => f.field === 'file') || parsed.files[0];
+      if (!file) return json(res, 400, { error: 'No file was attached.' });
+      data = file.data;
+      filename = filename || file.filename;
+    }
+
+    filename = (filename || 'document.pdf').replace(/[\r\n]/g, '').trim();
+
+    // TC-03: extension allowlist before anything touches the file.
+    const ext = path.extname(filename).toLowerCase();
+    if (ext && !config.upload.allowedExtensions.includes(ext)) {
+      return json(res, 400, { error: `File extension ${ext} not allowed. Upload a PDF.` });
+    }
+    if (!data || !data.length) return json(res, 400, { error: 'The file was empty.' });
+
+    // Magic bytes, not the extension — a .pdf that isn't a PDF is still rejected.
+    if (!isPdf(data)) {
+      return json(res, 400, { error: 'That file is not a PDF. Please upload a PDF.' });
+    }
+    if (isEncrypted(data)) {
+      return json(res, 400, {
+        error: 'This PDF is password-protected, so its pages cannot be counted. Please remove the password and try again.',
+      });
+    }
+
+    const t0 = Date.now();
+    const pageCount = countPdfPages(data);
+    const parseMs = Date.now() - t0;
+
+    if (!pageCount) {
+      return json(res, 422, {
+        error: 'The page count could not be read from this PDF. It may be damaged.',
+      });
+    }
+    if (pageCount > config.upload.maxPages) {
+      return json(res, 422, {
+        error: `${pageCount} pages exceeds the ${config.upload.maxPages}-page limit for one job.`,
+      });
+    }
+
+    // UUID-masked filename on disk: the user's name never reaches the filesystem.
+    const stored = `${crypto.randomUUID()}.pdf`;
+    const storagePath = path.join(config.docsDir, stored);
+    await fsp.writeFile(storagePath, data);
+
+    const doc = store.createDocument({
+      stored_filename: stored,
+      original_filename: path.basename(filename),
+      mime_type: 'application/pdf',
+      size_bytes: data.length,
+      page_count: pageCount,
+      storage_path: storagePath,
+    });
+
+    console.log(`[upload] ${doc.original_filename} -> ${pageCount} pages in ${parseMs}ms ` +
+                `(${(data.length / 1024).toFixed(0)} KB)`);
+
+    return json(res, 201, {
+      documentId: doc.id,
+      filename: doc.original_filename,
+      pageCount,
+      sizeBytes: data.length,
+      parseMs,
+    });
+  }
+
+  /* -- create an order against a really-uploaded document -- */
+
+  if (method === 'POST' && pathname === '/api/orders') {
+    const body = await readJson(req);
+
+    const doc = store.getDocument(Number(body.documentId));
+    if (!doc) return json(res, 404, { error: 'Unknown document. Please upload again.' });
+    if (doc.deleted_at || !doc.storage_path) {
+      return json(res, 410, { error: 'That document has already been printed and erased.' });
+    }
+
+    const copies = Number(body.copies) || 1;
+    const duplex = Boolean(body.duplex);
+    const colourMode = body.colourMode === 'colour' ? 'colour' : 'bw';
+    const paperSize = body.paperSize === 'A3' ? 'A3' : 'A4';
+
+    let quote;
+    try {
+      // Priced from the STORED page count, never a number sent by the client.
+      quote = priceOrder({ pageCount: doc.page_count, copies, duplex, colourMode });
+    } catch (err) {
+      return json(res, 400, { error: err.message });
+    }
+
+    const otp = generateOtp();
+    const order = store.createOrder({
+      document_id: doc.id,
+      paper_size: paperSize,
+      colour_mode: colourMode,
+      duplex,
+      copies,
+      amount: quote.amount,
+      pickup_otp: otp,
+      // Razorpay lives on the web app; this agent trusts a payment already verified
+      // there. With SIM_ENABLED the order is marked paid so the kiosk can be tested.
+      payment_status: config.simEnabled ? 'PAID' : 'PENDING',
+      print_status: config.simEnabled ? 'READY_FOR_KIOSK' : 'CREATED',
+      otp_expires_at: otpExpiryISO(),
+    });
+
+    return json(res, 201, { order, quote, otp, document: {
+      original_filename: doc.original_filename, page_count: doc.page_count } });
+  }
+
   /* -- simulator: stand in for the phone app + Razorpay -- */
 
   if (config.simEnabled && method === 'POST' && pathname === '/api/sim/order') {
@@ -326,6 +461,9 @@ const server = http.createServer(async (req, res) => {
       if (!config.simEnabled) return json(res, 404, { error: 'Simulator disabled' });
       if (await serveStatic(res, '/sim.html')) return;
     }
+    if (url.pathname === '/upload') {
+      if (await serveStatic(res, '/upload.html')) return;
+    }
     if (await serveStatic(res, url.pathname)) return;
 
     json(res, 404, { error: 'Not found' });
@@ -356,9 +494,24 @@ const banner = async () => {
   console.log(`  data        ${config.dataDir}`);
   console.log('  ' + '-'.repeat(52));
   console.log(`  keypad      http://localhost:${config.port}/`);
+  console.log(`  upload      http://localhost:${config.port}/upload`);
   if (config.simEnabled) console.log(`  simulator   http://localhost:${config.port}/sim`);
   for (const ip of nets) console.log(`              http://${ip}:${config.port}/`);
   console.log('');
+
+  // Windows has no built-in silent PDF printer. Say so at boot rather than
+  // letting the first real job fail with a dialog nobody is standing next to.
+  if (info.driver === 'windows') {
+    const { DRIVERS } = await import('./src/printer.js');
+    const sumatra = await DRIVERS.windows.findSumatra();
+    if (!sumatra) {
+      console.log('  note: no SumatraPDF found. Windows cannot print a PDF silently without it,');
+      console.log('        so jobs fall back to the shell print verb (may open a dialog).');
+      console.log('        Install it (winget install SumatraPDF.SumatraPDF) or set SUMATRA_PATH.');
+      console.log('        On the Raspberry Pi this does not apply - CUPS prints directly.');
+      console.log('');
+    }
+  }
 };
 
 server.listen(config.port, config.host, async () => {
