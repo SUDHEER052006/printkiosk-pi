@@ -177,6 +177,10 @@ async function handleApi(req, res, url) {
       upiConfigured: isValidVpa(config.upi.vpa),
       upiStaticImage: Boolean(config.upi.qrImage),
       approvalRequired: config.payments.mode !== 'sim',
+      // Lets the dashboard say "you cannot approve from here" up front, instead
+      // of the staff discovering it when a button silently fails.
+      canApprove: isStaff(req),
+      tokenRequired: Boolean(config.payments.adminToken),
     });
   }
 
@@ -240,6 +244,8 @@ async function handleApi(req, res, url) {
       printer: await driverInfo(),
       uploadUrl: uploadUrl(),
       paymentMode: config.payments.mode,
+      canApprove: isStaff(req),
+      tokenRequired: Boolean(config.payments.adminToken),
       upiConfigured: isValidVpa(config.upi.vpa),
       // Everything still waiting on money, whether or not the student told us
       // they paid. Staff must be able to release a job from the dashboard even

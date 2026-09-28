@@ -197,6 +197,19 @@
         </div>
       </div>
 
+      <div id="lock-banner" class="banner hide" style="background:var(--info-bg);color:var(--brand);border-color:var(--brand-line);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <div style="flex:1;">
+          <b>Approvals are locked on this device.</b>
+          <span id="lock-why"></span>
+          <div id="lock-form" class="hide" style="display:flex;gap:8px;margin-top:9px;max-width:420px;">
+            <input id="lock-token" type="password" placeholder="Staff token" autocomplete="off"
+                   style="flex:1;padding:6px 10px;font-size:13px;">
+            <button class="btn" id="lock-save" type="button" style="padding:6px 14px;font-size:13px;">Unlock</button>
+          </div>
+        </div>
+      </div>
+
       <section id="overview">
         <div class="tiles">
           <div class="tile">      <div class="k">Jobs today</div>    <div class="v" id="t-jobs">—</div>   <div class="n" id="t-jobs-n">&nbsp;</div></div>
@@ -303,6 +316,26 @@
   let filter = 'all';
   let latest = null;
 
+  /**
+   * Staff token. Approving a payment is the one action that releases a print
+   * job, so the server restricts it to the kiosk machine unless ADMIN_TOKEN is
+   * set. Accept the token from ?token=... once, then remember it here so the
+   * dashboard works from a laptop at the desk.
+   */
+  const TOKEN_KEY = 'printkiosk.staffToken';
+  let staffToken = '';
+  try {
+    const fromUrl = new URLSearchParams(location.search).get('token');
+    if (fromUrl) {
+      localStorage.setItem(TOKEN_KEY, fromUrl);
+      history.replaceState(null, '', location.pathname);   // keep it out of the address bar
+    }
+    staffToken = localStorage.getItem(TOKEN_KEY) || '';
+  } catch { staffToken = ''; }
+
+  const authHeaders = (extra = {}) =>
+    (staffToken ? { ...extra, 'X-Admin-Token': staffToken } : extra);
+
   const rupees = (n) => 'Rs. ' + Number(n || 0).toLocaleString('en-IN');
 
   const uptime = (s) => {
@@ -404,7 +437,7 @@
   async function load() {
     let s;
     try {
-      const r = await fetch('/api/stats');
+      const r = await fetch('/api/stats', { headers: authHeaders() });
       s = await r.json();
     } catch {
       $('bar-sub').textContent = 'Cannot reach the kiosk agent.';
@@ -431,7 +464,16 @@
       ? 'sim mode — no approval needed'
       : 'approve each one below';
 
-    drawPending(s.pending || []);
+    drawPending(s.pending || [], s.canApprove !== false);
+
+    const locked = s.canApprove === false;
+    $('lock-banner').classList.toggle('hide', !locked);
+    if (locked) {
+      $('lock-why').textContent = s.tokenRequired
+        ? ' This kiosk requires a staff token. Enter it once and it is remembered on this device.'
+        : ' Open the dashboard on the kiosk machine itself, or set ADMIN_TOKEN and reload with ?token=...';
+      $('lock-form').classList.toggle('hide', !s.tokenRequired);
+    }
 
     $('bar-sub').textContent =
       `${s.kioskId} · ${p.simulated ? 'simulation mode' : (p.activePrinter || 'no printer')} · payments: ${s.paymentMode}`;
@@ -462,7 +504,7 @@
     drawRows(s.recent);
   }
 
-  function drawPending(list) {
+  function drawPending(list, canApprove) {
     $('pending-card').classList.toggle('hide', list.length === 0);
     $('pending-count').textContent = list.length;
     const esc = (x) => String(x).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
@@ -495,8 +537,8 @@
         <div class="dim" style="font-size:11.5px;">${spec} · ${p.sheets} sheets · ${esc(p.order_id)}</div>
         ${claim}
         <div class="acts">
-          <button class="btn" data-act="approve" type="button">Payment received</button>
-          <button class="btn secondary" data-act="reject" type="button">Reject</button>
+          <button class="btn" data-act="approve" type="button"${canApprove ? '' : ' disabled title="Approvals are locked on this device"'}>Payment received</button>
+          <button class="btn secondary" data-act="reject" type="button"${canApprove ? '' : ' disabled'}>Reject</button>
         </div>
       </div>`;
     }).join('');
@@ -515,12 +557,15 @@
     for (const b of card.querySelectorAll('button')) b.disabled = true;
     try {
       const r = await fetch('/api/payments/approve', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ orderId, reject }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
-        alert(d.error || 'Could not update that payment.');
+        alert(r.status === 403
+          ? 'Approvals are locked on this device. Use the kiosk machine, or enter the staff token.'
+          : (d.error || 'Could not update that payment.'));
         for (const b of card.querySelectorAll('button')) b.disabled = false;
         return;
       }
@@ -538,6 +583,16 @@
     for (const c of $('filters').children) c.classList.toggle('on', c === chip);
     if (latest) drawRows(latest.recent);
   });
+
+  $('lock-save').addEventListener('click', () => {
+    const v = $('lock-token').value.trim();
+    if (!v) return;
+    staffToken = v;
+    try { localStorage.setItem(TOKEN_KEY, v); } catch { /* private mode */ }
+    $('lock-token').value = '';
+    load();
+  });
+  $('lock-token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('lock-save').click(); });
 
   $('refresh').addEventListener('click', load);
 

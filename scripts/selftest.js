@@ -225,6 +225,12 @@ async function waitForJob(jobId, timeoutMs = 240000) {
 
     const afterReject = await get('/api/orders/' + blank.made.body.order.id + '/status');
     ok('a rejected order stays locked', afterReject.body.otp === null);
+
+    // The dashboard must be able to tell, before a click, whether it may approve.
+    ok('dashboard is told whether it can approve',
+       typeof h.body.canApprove === 'boolean', 'canApprove=' + h.body.canApprove);
+    const stats2 = await get('/api/stats');
+    ok('stats reports approval rights too', typeof stats2.body.canApprove === 'boolean');
   }
 
   console.log(`\n  ${pass} passed, ${fail} failed\n`);
