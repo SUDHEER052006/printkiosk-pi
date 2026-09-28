@@ -12,7 +12,7 @@ import { generateOtp, verifyOtp, otpExpiryISO } from './src/otp.js';
 import { makePdf, countPdfPages, isPdf, isEncrypted } from './src/pdf.js';
 import { parseMultipart } from './src/multipart.js';
 import { qrSvg } from './src/qr.js';
-import { buildUpiUri, normaliseUtr, verifyWebhookSignature, isValidVpa } from './src/upi.js';
+import { buildUpiUri, normaliseUtr, isValidVpa } from './src/upi.js';
 import { driverInfo, resolveDriver } from './src/printer.js';
 import { startJob, getJob, snapshot, bus } from './src/jobs.js';
 
@@ -176,6 +176,7 @@ async function handleApi(req, res, url) {
       paymentMode: config.payments.mode,
       upiConfigured: isValidVpa(config.upi.vpa),
       upiStaticImage: Boolean(config.upi.qrImage),
+      approvalRequired: config.payments.mode !== 'sim',
     });
   }
 
@@ -240,8 +241,11 @@ async function handleApi(req, res, url) {
       uploadUrl: uploadUrl(),
       paymentMode: config.payments.mode,
       upiConfigured: isValidVpa(config.upi.vpa),
+      // Everything still waiting on money, whether or not the student told us
+      // they paid. Staff must be able to release a job from the dashboard even
+      // when the phone never sent a reference.
       pending: orders
-        .filter((o) => o.payment_status === 'AWAITING_VERIFICATION')
+        .filter((o) => o.payment_status === 'PENDING' || o.payment_status === 'AWAITING_VERIFICATION')
         .map((o) => {
           const doc = store.getDocument(o.document_id);
           return {
@@ -249,8 +253,14 @@ async function handleApi(req, res, url) {
             order_id: o.order_id,
             amount: o.amount,
             utr: o.payment_ref,
+            claimed: o.payment_status === 'AWAITING_VERIFICATION',
             claimed_at: o.payment_claimed_at,
+            created_at: o.created_at,
             filename: doc ? doc.original_filename : '(removed)',
+            pages: doc ? doc.page_count : null,
+            copies: o.copies,
+            duplex: o.duplex,
+            colour_mode: o.colour_mode,
             sheets: sheetsOf(o),
           };
         }),
@@ -263,7 +273,8 @@ async function handleApi(req, res, url) {
         waiting: waiting.length,
         printing: printing.length,
         failed: failed.length,
-        awaitingPayment: orders.filter((o) => o.payment_status === 'AWAITING_VERIFICATION').length,
+        awaitingPayment: orders.filter(
+          (o) => o.payment_status === 'PENDING' || o.payment_status === 'AWAITING_VERIFICATION').length,
         shredded: docs.filter((d) => d.deleted_at).length,
         onDisk: docs.filter((d) => !d.deleted_at && d.storage_path).length,
       },
@@ -600,19 +611,25 @@ async function handleApi(req, res, url) {
       return json(res, 200, { ok: true, alreadyPaid: true, otp: order.pickup_otp });
     }
 
-    const utr = normaliseUtr(body.utr);
-    if (!utr) {
+    // The reference is optional: a person checks the money either way, and
+    // refusing the job because the student could not find a 12-digit number in
+    // their payment app just moves the problem to the desk.
+    const raw = String(body.utr ?? '').trim();
+    const utr = raw ? normaliseUtr(raw) : null;
+    if (raw && !utr) {
       return json(res, 400, {
-        error: 'Enter the 12-digit UPI reference number from your payment app.',
+        error: 'That does not look like a 12-digit UPI reference. Leave it blank if you cannot find it.',
       });
     }
 
     // One reference, one job. Otherwise a single payment prints all term.
-    const clash = store.raw().orders.find((o) => o.payment_ref === utr && o.id !== order.id);
-    if (clash) {
-      return json(res, 409, {
-        error: 'That UPI reference has already been used for another order.',
-      });
+    if (utr) {
+      const clash = store.raw().orders.find((o) => o.payment_ref === utr && o.id !== order.id);
+      if (clash) {
+        return json(res, 409, {
+          error: 'That UPI reference has already been used for another order.',
+        });
+      }
     }
 
     store.updateOrder(order.id, {
@@ -650,53 +667,6 @@ async function handleApi(req, res, url) {
       payment_method: order.payment_method || 'upi_manual',
     });
     console.log(`[payment] ${order.order_id} approved by staff — OTP released`);
-    return json(res, 200, { ok: true, status: 'PAID' });
-  }
-
-  /**
-   * Automated confirmation. Works with a real gateway, or with a phone app that
-   * relays the bank's payment SMS. Body must be HMAC-SHA256 signed with
-   * PAYMENT_WEBHOOK_SECRET — the scheme the project report specifies.
-   */
-  if (method === 'POST' && pathname === '/api/payments/webhook') {
-    const raw = await readBody(req, 256 * 1024);
-    const sig = req.headers['x-signature'] || req.headers['x-razorpay-signature'];
-
-    const check = verifyWebhookSignature(raw, sig);
-    if (!check.ok) {
-      console.warn('[payment] webhook rejected:', check.reason);
-      return json(res, 401, { error: 'Invalid signature' });
-    }
-
-    let body;
-    try { body = JSON.parse(raw.toString('utf8')); } catch {
-      return json(res, 400, { error: 'Malformed JSON body' });
-    }
-
-    const order = body.orderId
-      ? store.getOrder(Number(body.orderId))
-      : store.getOrderByBusinessId(String(body.order_id || ''));
-    if (!order) return json(res, 404, { error: 'Unknown order' });
-
-    // Never trust an amount the caller states without checking it against ours.
-    if (body.amount !== undefined && Number(body.amount) !== order.amount) {
-      console.warn(`[payment] webhook amount mismatch on ${order.order_id}: ` +
-                   `claimed ${body.amount}, expected ${order.amount}`);
-      return json(res, 409, { error: 'Amount does not match the order' });
-    }
-
-    if (order.payment_status === 'PAID') {
-      return json(res, 200, { ok: true, alreadyPaid: true });
-    }
-
-    store.updateOrder(order.id, {
-      payment_status: 'PAID',
-      print_status: 'READY_FOR_KIOSK',
-      payment_ref: body.utr || body.payment_id || null,
-      payment_verified_at: new Date().toISOString(),
-      payment_method: body.method || 'webhook',
-    });
-    console.log(`[payment] ${order.order_id} confirmed by webhook`);
     return json(res, 200, { ok: true, status: 'PAID' });
   }
 
@@ -747,7 +717,7 @@ async function handleApi(req, res, url) {
       copies,
       amount: quote.amount,
       pickup_otp: otp,
-      payment_status: 'PAID',            // simulates a verified Razorpay webhook
+      payment_status: 'PAID',            // /sim shortcut: skips the approval step
       print_status: 'READY_FOR_KIOSK',
       otp_expires_at: otpExpiryISO(),
     });

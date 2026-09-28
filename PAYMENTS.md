@@ -18,21 +18,22 @@ expose one, and your bank does not either unless you have a merchant account.
 So a static UPI QR **can never, by itself, decide whether to release a print job**. Anything that
 claims otherwise is either using a payment gateway, or trusting the student.
 
-That leaves three honest options, and this project implements all three.
+So the only honest answer is: **a person confirms every payment.** That is how this kiosk works -
+nothing auto-confirms, by design.
 
 ---
 
-## The three modes
+## The two modes
 
 Set with `PAYMENT_MODE`.
 
 | Mode | How a job becomes printable | Use when |
 |---|---|---|
 | `sim` | Marked paid instantly | Demos and development. **Free printing.** |
-| `upi_manual` | Student pays → submits UPI reference → staff approve in the dashboard | **Prototype with real money.** Attended kiosk. |
-| `webhook` | An HMAC-signed callback marks it paid | Later, with a gateway or an SMS relay |
+| `upi_manual` | Student pays, then **staff click Payment received at `/admin`** | Real money. Attended kiosk. |
 
----
+There is deliberately no automatic-confirmation mode. `/api/payments/webhook` does not exist, and
+the self test asserts it returns `404`.
 
 ## `upi_manual` — what you asked for
 
@@ -52,19 +53,28 @@ PAYMENT_MODE=upi_manual UPI_VPA=yourname@okhdfcbank UPI_NAME="PrintKiosk IDEA La
 2. **Step 3 — Pay.** A UPI QR appears with **the exact amount and the order id already filled in**.
    It is a proper `upi://pay?pa=…&am=30.00&cu=INR&tn=PrintKiosk PK-2026-000001` intent, so any UPI
    app opens with the amount pre-set. On a phone there is also an **Open UPI app** button.
-3. They pay, then type the **12-digit UPI reference** (their app calls it "UPI transaction ID" or
-   "UTR") and tap **I have paid**.
+3. They pay, then tap **I have paid**. They can also type the **12-digit UPI reference** (their app
+   calls it "UPI transaction ID" or "UTR") - optional, and only there to help the desk find the
+   payment faster.
 4. The page says *"Waiting for confirmation…"* and **polls the kiosk every 3 seconds.**
 5. The moment staff approve, the 6-digit pickup code appears on their phone — no refresh needed.
 
 ### What staff see
 
-The dashboard at `/admin` grows a **Payments to verify** card showing the amount, the filename, the
-UTR, and the time claimed. Staff check the amount arrived (bank app notification or passbook) and
-click **Received** — or **Reject**.
+The dashboard at `/admin` has an **Awaiting payment** card listing **every** order that has not been
+paid for - not only the ones where the student remembered to tap "I have paid". Each row shows the
+amount, the document, the print spec, and either the UPI reference or *"no confirmation from the
+phone yet"*.
 
-Approving flips the order to `PAID` + `READY_FOR_KIOSK`, which is the only thing that makes the OTP
-work at the keypad.
+Two buttons per row: **Payment received** and **Reject**.
+
+- Rows the student has confirmed are highlighted and sorted to the top - someone is standing there.
+- Approving a row the phone never reported asks you to confirm first, so a stray click cannot
+  release a job.
+
+Approving flips the order to `PAID` + `READY_FOR_KIOSK`, which is the only thing in the whole system
+that makes an OTP work at the keypad.
+
 
 ### Why it is safe enough for a prototype
 
@@ -72,6 +82,8 @@ work at the keypad.
   every endpoint. The code exists in the database but is never sent to the phone.
 - **One UTR, one job.** Re-using a reference on a second order returns `409`. Otherwise one ₹10
   payment prints all term.
+- **Claiming payment is not paying.** A student tapping "I have paid" changes nothing except adding
+  a row to your queue. Only the staff click releases the code.
 - **The amount is never taken from the client.** It is recomputed from the stored page count.
 - **Approval is gated.** With `ADMIN_TOKEN` set it needs that token; without one, approvals are
   accepted **only from the kiosk machine itself**, so nobody on the Wi-Fi can approve their own
@@ -85,41 +97,15 @@ expect the money to match.
 
 ---
 
-## `webhook` — when you want it automatic
+## If you later want it automatic
 
-```bash
-PAYMENT_MODE=webhook PAYMENT_WEBHOOK_SECRET="a-long-random-string" node server.js
-```
+Nothing here confirms payments automatically, and that is deliberate. The only route that removes
+the manual step honestly is a payment gateway - Razorpay, Cashfree or PhonePe give you a dynamic UPI
+QR *and* a signed webhook, which is the one way to get a verifiable record without a person. That
+means KYC and a merchant account; Razorpay's test mode works today with no money.
 
-Then `POST /api/payments/webhook` with an `X-Signature` header holding the HMAC-SHA256 of the raw
-body, keyed with that secret — the exact scheme your project report specifies for Razorpay:
-
-```bash
-BODY='{"orderId":1,"amount":30,"utr":"412345678901"}'
-SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "a-long-random-string" -r | cut -d' ' -f1)
-curl -X POST http://localhost:8080/api/payments/webhook \
-     -H "Content-Type: application/json" -H "X-Signature: $SIG" -d "$BODY"
-```
-
-Verified behaviour:
-
-| Request | Response |
-|---|---|
-| No signature | `401` |
-| Wrong signature | `401` |
-| Amount that disagrees with the order | `409` |
-| Valid | `200`, order PAID, OTP released |
-
-Two ways to feed it:
-
-**A. A real gateway** — Razorpay, Cashfree or PhonePe give you a dynamic UPI QR *and* a webhook.
-This is the only route that is genuinely automatic and auditable. Needs KYC and a merchant account;
-Razorpay's test mode works today with no money.
-
-**B. An SMS/notification relay** (the classic student hack) — an old Android phone with your bank
-app installed, plus a small app that forwards payment SMS to the Pi. Parse the amount and the UTR,
-sign it, POST it. Cheap and genuinely automatic; fragile, because it breaks whenever the bank
-changes its SMS wording, and it depends on that phone staying on the network.
+When you get there, the change is a single endpoint that marks an order `PAID` after verifying the
+gateway's signature - the same flip the **Payment received** button performs now.
 
 ---
 
@@ -127,11 +113,14 @@ changes its SMS wording, and it depends on that phone staying on the network.
 
 For a **college prototype with a person nearby**: `upi_manual`. It is honest, needs no KYC, no
 gateway, no fees, and it demos well — the examiner can watch the phone poll and the code appear the
-instant you click Received.
-
-For **unattended, real money**: a payment gateway. Nothing else gives you a verifiable record.
+instant you click **Payment received**.
 
 For a **viva demo with no money at all**: `sim`, and say so plainly.
+
+---
+
+Either way the rule is the same: **the kiosk must be attended.** A human confirming the money is
+the entire security model of this mode, and there is no substitute for it short of a gateway.
 
 ---
 

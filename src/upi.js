@@ -13,11 +13,12 @@
  * "did it arrive?" decision to one of the three modes in config.paymentMode:
  *
  *   sim          - marked paid immediately. Demos only.
- *   upi_manual   - student pays, submits the UPI reference, a human approves.
- *   webhook      - an HMAC-signed callback marks it paid (gateway or SMS relay).
+ *   upi_manual   - student pays; a person approves it from the dashboard.
+ *
+ * Nothing confirms a payment automatically. That is the point: the only thing
+ * that can release a print job is a human who has seen the money arrive.
  */
 
-import crypto from 'node:crypto';
 import config from './config.js';
 
 /**
@@ -58,22 +59,5 @@ export function normaliseUtr(raw) {
   return /^[0-9]{12}$/.test(s) ? s : null;
 }
 
-/**
- * Verifies an HMAC-SHA256 signature over the raw request body — the same scheme
- * the project report specifies for Razorpay, and what any SMS-relay app should
- * use. Timing-safe, and fails closed when no secret is configured.
- */
-export function verifyWebhookSignature(rawBody, signature) {
-  const secret = config.payments.webhookSecret;
-  if (!secret) return { ok: false, reason: 'No PAYMENT_WEBHOOK_SECRET configured' };
-  if (!signature) return { ok: false, reason: 'Missing signature header' };
-
-  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
-  const a = Buffer.from(expected);
-  const b = Buffer.from(String(signature).trim().toLowerCase());
-  if (a.length !== b.length) return { ok: false, reason: 'Signature length mismatch' };
-  if (!crypto.timingSafeEqual(a, b)) return { ok: false, reason: 'Signature mismatch' };
-  return { ok: true };
-}
 
 export default buildUpiUri;

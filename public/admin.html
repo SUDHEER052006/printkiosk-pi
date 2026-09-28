@@ -113,6 +113,8 @@
   .fname span { font-size: 11.5px; color: var(--faint); }
 
   .pend { border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 12px; background: var(--surface); }
+  .pend.claimed { border-color: var(--sun); background: #FFFDF6; }
+  .pend .top { margin-bottom: 3px; }
   .pend .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
   .pend .amt { font-family: var(--display); font-weight: 700; font-size: 17px; color: var(--brand); }
   .pend .f { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -247,7 +249,7 @@
         <div class="side">
           <div class="card hide" id="pending-card" style="border-top:3px solid var(--sun);">
             <header>
-              <h2>Payments to verify</h2>
+              <h2>Awaiting payment</h2>
               <span class="pill warn" id="pending-count">0</span>
             </header>
             <div class="body" id="pending-list" style="display:flex;flex-direction:column;gap:10px;"></div>
@@ -425,7 +427,9 @@
     $('t-fail').textContent = t.failed;
     $('t-fail-n').textContent = t.failed ? 'needs attention' : 'none';
     $('t-verify').textContent = t.awaitingPayment || 0;
-    $('t-verify-n').textContent = (s.paymentMode === 'sim') ? 'sim mode — auto-paid' : 'UPI payments claimed';
+    $('t-verify-n').textContent = (s.paymentMode === 'sim')
+      ? 'sim mode — no approval needed'
+      : 'approve each one below';
 
     drawPending(s.pending || []);
 
@@ -463,17 +467,35 @@
     $('pending-count').textContent = list.length;
     const esc = (x) => String(x).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 
-    $('pending-list').innerHTML = list.map((p) => {
-      const when = p.claimed_at ? new Date(p.claimed_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '';
-      return `<div class="pend" data-id="${p.id}">
+    // Claimed jobs first — the student is standing there waiting.
+    const sorted = list.slice().sort((a, b) => (b.claimed ? 1 : 0) - (a.claimed ? 1 : 0));
+
+    $('pending-list').innerHTML = sorted.map((p) => {
+      const stamp = p.claimed_at || p.created_at;
+      const when = stamp
+        ? new Date(stamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+        : '';
+      const spec = [
+        p.pages ? p.pages + 'p' : '—',
+        p.copies + '×',
+        p.duplex ? 'duplex' : 'single',
+        p.colour_mode === 'colour' ? 'colour' : 'B&W',
+      ].join(' · ');
+
+      const claim = p.claimed
+        ? `<div class="utr">UTR ${esc(p.utr || 'not given')} · said they paid at ${when}</div>`
+        : `<div class="utr" style="color:var(--faint);">no confirmation from the phone yet · ${when}</div>`;
+
+      return `<div class="pend${p.claimed ? ' claimed' : ''}" data-id="${p.id}">
         <div class="top">
           <span class="amt">${rupees(p.amount)}</span>
-          <span class="dim" style="font-size:11.5px;">${when}</span>
+          <span class="pill ${p.claimed ? 'warn' : 'idle'}">${p.claimed ? 'says paid' : 'unpaid'}</span>
         </div>
         <div class="f">${esc(p.filename)}</div>
-        <div class="utr">UTR ${esc(p.utr || '—')} · ${esc(p.order_id)}</div>
+        <div class="dim" style="font-size:11.5px;">${spec} · ${p.sheets} sheets · ${esc(p.order_id)}</div>
+        ${claim}
         <div class="acts">
-          <button class="btn" data-act="approve" type="button">Received</button>
+          <button class="btn" data-act="approve" type="button">Payment received</button>
           <button class="btn secondary" data-act="reject" type="button">Reject</button>
         </div>
       </div>`;
@@ -486,7 +508,9 @@
     const card = btn.closest('.pend');
     const orderId = Number(card.dataset.id);
     const reject = btn.dataset.act === 'reject';
-    if (reject && !confirm('Reject this payment? The student will be told it could not be verified.')) return;
+    if (reject && !confirm('Reject this order? The student will be told the payment could not be verified.')) return;
+    if (!reject && !card.classList.contains('claimed')
+        && !confirm('The phone has not reported a payment for this order yet. Release it anyway?')) return;
 
     for (const b of card.querySelectorAll('button')) b.disabled = true;
     try {

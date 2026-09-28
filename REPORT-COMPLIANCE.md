@@ -15,7 +15,7 @@ Legend: **Done** · **Partial** · **Not built**
 | 1 | Responsive web app for upload from mobile or laptop | **Done** | `public/upload.html`, drag-and-drop, real upload progress, mobile-first |
 | 2 | Automated in-memory PDF parsing for page count | **Done** | `src/pdf.js` — parsed from a RAM buffer before anything is written to disk |
 | 3 | Backend-authoritative dynamic pricing with duplex maths | **Done** | `src/pricing.js`; the client never sends a price |
-| 4 | Razorpay gateway with HMAC verification | **Partial** | No Razorpay account, but a real payment layer exists: UPI intent QR, payment gating, staff verification, and an **HMAC-SHA256 signed webhook** (`/api/payments/webhook`) implementing the report's exact signature scheme. Point Razorpay at it and module 3 is done. See `PAYMENTS.md` |
+| 4 | Razorpay gateway with HMAC verification | **Not built** | Payment is a UPI QR plus **manual staff approval** at `/admin` - a deliberate choice, since a personal UPI VPA exposes no API to verify against. Automatic confirmation was removed on purpose. See `PAYMENTS.md` |
 | 5 | Decoupled 6-digit OTP release at the kiosk | **Done** | `src/otp.js` + `public/kiosk.html` |
 | 6 | Multi-driver hardware abstraction (CUPS / Windows / mock) | **Done** | `src/printer.js` |
 | 7 | Zero-trace shredding from memory, disk and storage | **Partial** | Local disk shredding is done (`src/jobs.js`). There is no cloud bucket to purge because there is no Supabase |
@@ -27,7 +27,7 @@ Legend: **Done** · **Partial** · **Not built**
 | Objective | Status | Note |
 |---|---|---|
 | Automate ingestion, page counting, cost computation | **Done** | Validated against 44 real PDFs |
-| Cashless payment processing | **Partial** | UPI QR with amount pre-filled + attended verification works today; automatic confirmation needs a gateway or SMS relay |
+| Cashless payment processing | **Partial** - UPI QR with the amount pre-filled works today; confirmation is manual by design |
 | Time-bound OTP authorisation | **Done** | 24h TTL, single use, progressive backoff |
 | Cloud storage (Supabase) + serverless hosting (Vercel) | **Not built** | Local JSON store instead; `src/store.js` is the single swap point |
 
@@ -42,7 +42,7 @@ Every row of that comparison table holds, **except** the payment row.
 | Submission | Secure web upload from mobile/laptop | **Done** — plus a QR code on the kiosk so no typing |
 | Page counting | Automated parser | **Done** |
 | Pricing | Backend-enforced sheet & duplex formulas | **Done** |
-| Payment | Automated gateway with webhook verification | **Partial** — webhook with HMAC verification is implemented and tested; no gateway account wired to it |
+| Payment | Automated gateway with webhook verification | **Differs by design** - UPI QR carrying the per-order amount, released by staff approval. No automatic confirmation |
 | Privacy | Operator never sees the document | **Done** — UUID filenames, no operator view |
 | Print release | Locked until 6-digit OTP | **Done** |
 | Data retention | Automatic shredding on completion | **Done** |
@@ -63,7 +63,7 @@ Every row of that comparison table holds, **except** the payment row.
 | Supabase PostgreSQL | **Not built** |
 | SQLite fallback (`node-sqlite3-wasm`) | **Substituted** — atomic JSON store, same schema shape, no native build on the Pi |
 | Supabase Storage bucket | **Not built** — local `data/documents/` |
-| Razorpay REST + HMAC-SHA256 | **Partial** — the HMAC-SHA256 verification is built and tested (`src/upi.js`); the Razorpay REST calls are not |
+| Razorpay REST + HMAC-SHA256 | **Not built** - payment is a UPI QR plus staff approval |
 | Vercel serverless | **Not built** — and cannot host the printing half |
 | `pdf-parse` | **Substituted** — own parser in `src/pdf.js`, validated against pypdf on 44 real files |
 
@@ -91,7 +91,7 @@ The six DFD stages all exist: Upload → Order → Payment → Release → Print
 |---|---|
 | 1 — Document ingestion & in-memory parsing | **Done** |
 | 2 — Authoritative pricing engine | **Done** |
-| 3 — Payment orchestration & webhook security | **Partial** — webhook security is built and tested (401 unsigned, 401 bad signature, 409 amount mismatch); the Razorpay SDK call is not |
+| 3 - Payment orchestration & webhook security | **Not built** - replaced by manual approval; `PAYMENTS.md` explains why a UPI QR cannot be verified in software |
 | 4 — Decoupled OTP kiosk release | **Done** |
 | 5 — Hardware abstraction layer | **Done** |
 
@@ -121,7 +121,7 @@ than Postgres.
 |---|---|
 | Zero-knowledge operator | **Done** |
 | UUID sanitisation against path traversal | **Done** |
-| HMAC-SHA256 payment signatures | **Done** — `src/upi.js`, timing-safe, fails closed with no secret |
+| HMAC-SHA256 payment signatures | **Not built** - no gateway; a person confirms each payment |
 | Auto-shredding engine | **Done** |
 | Helmet HTTP headers | **Partial** — `X-Content-Type-Options` and `Referrer-Policy` are set; no Helmet, no CSP/HSTS |
 
@@ -153,7 +153,8 @@ Progress is polled from the live queue with `lpstat` and streamed to the screen 
 
 ## 11. Test cases (report p.15)
 
-All seven are automated in `scripts/selftest.js`, which runs 16 assertions in `sim` mode and 25
+All seven are automated in `scripts/selftest.js`, which runs 16 assertions in `sim` mode and 32
+with manual approval active.
 when a payment mode is active.
 
 | ID | Scenario | Status |
@@ -161,7 +162,7 @@ when a payment mode is active.
 | TC-01 | Multi-page PDF upload, page count returned | **Pass** |
 | TC-02 | Duplex sheet maths | **Pass** |
 | TC-03 | Invalid file filtering (`.exe` / `.sh`) | **Pass** — plus content-sniffing |
-| TC-04 | Razorpay signature check | **Pass (equivalent)** — the same HMAC-SHA256 scheme is asserted against the project's own webhook |
+| TC-04 | Razorpay signature check | **Not applicable** - no gateway. The suite instead asserts that *nothing* can confirm a payment automatically, and that the OTP stays withheld until a person approves |
 | TC-05 | OTP release at kiosk | **Pass** |
 | TC-06 | Incorrect OTP handling | **Pass** |
 | TC-07 | Auto file shredding | **Pass** |
@@ -194,8 +195,10 @@ offline mesh spooling. They are correctly listed as future work.
 hardware abstraction layer, shredding, the database shape, the kiosk and admin interfaces, and six
 of the seven test cases.
 
-**Not built:** a Razorpay merchant account (the HMAC verification it would use *is* built and
-tested), Supabase as the database and object store, and Vercel deployment.
+**Not built:** Razorpay and its HMAC verification. Payment is instead a UPI QR released by manual
+staff approval - a deliberate design decision rather than a gap, because a personal UPI VPA exposes
+no API to verify against. Also not built: Supabase as the database and object store, and Vercel
+deployment.
 
 Those three are one coherent piece of work — the cloud tier — and `VERCEL.md` is the plan for it.
 The honest framing for your viva: *the payment gateway is the remaining integration; everything that

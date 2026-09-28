@@ -75,18 +75,20 @@ export const config = {
   },
 
   /**
-   * How a job becomes payable.
+   * How a job becomes payable. Nothing confirms a payment automatically —
+   * a person approves every one from the dashboard.
+   *
    *   sim        - auto-paid. Demo only; never on a kiosk students can reach.
-   *   upi_manual - show a UPI QR, student submits the UPI reference, staff approve.
-   *   webhook    - an HMAC-signed callback marks it paid (gateway or SMS relay).
+   *   upi_manual - show a UPI QR; staff approve each payment at /admin.
    */
   payments: {
-    mode: (env.PAYMENT_MODE || (bool(env.SIM_ENABLED, true) ? 'sim' : 'upi_manual')).toLowerCase(),
-    webhookSecret: env.PAYMENT_WEBHOOK_SECRET || '',
+    mode: (() => {
+      const raw = (env.PAYMENT_MODE || (bool(env.SIM_ENABLED, true) ? 'sim' : 'upi_manual')).toLowerCase();
+      if (raw === 'manual' || raw === 'upi') return 'upi_manual';
+      return raw === 'sim' ? 'sim' : 'upi_manual';
+    })(),
     // Staff approval token. Empty = approvals allowed from this machine only.
     adminToken: env.ADMIN_TOKEN || '',
-    // How long an unpaid order stays claimable before it is abandoned.
-    pendingTtlMin: num(env.PAYMENT_PENDING_TTL_MIN, 30),
   },
 
   upi: {

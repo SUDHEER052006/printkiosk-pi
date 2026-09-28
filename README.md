@@ -142,10 +142,9 @@ Everything is an environment variable; every one has a working default.
 | `MOCK_DURATION_MS` | `7000` | Simulated print duration |
 | `SUMATRA_PATH` | auto-detect | Windows silent PDF printing |
 | `KIOSK_HOST` | auto-detect | Force the LAN address shown in the QR code |
-| `PAYMENT_MODE` | `sim` | `sim` \| `upi_manual` \| `webhook` — see `PAYMENTS.md` |
+| `PAYMENT_MODE` | `sim` | `sim` or `upi_manual` - see `PAYMENTS.md`. Nothing auto-confirms. |
 | `UPI_VPA` | — | Your UPI ID, e.g. `you@okhdfcbank` |
 | `UPI_NAME` | `PrintKiosk` | Payee name shown in the UPI app |
-| `PAYMENT_WEBHOOK_SECRET` | — | HMAC key for `/api/payments/webhook` |
 | `ADMIN_TOKEN` | — | Required for staff approval; without it, localhost only |
 | `UPLOAD_MAX_BYTES` | `26214400` | Upload limit (25 MB) |
 | `UPLOAD_MAX_PAGES` | `200` | Page limit for one job |
@@ -168,8 +167,7 @@ Everything is an environment variable; every one has a working default.
 | `GET` | `/api/orders/:id/status` | Payment status; returns the OTP only once paid |
 | `GET` | `/api/upi-qr` | UPI payment QR for one order (amount pre-filled) |
 | `POST` | `/api/payments/claim` | Student submits the 12-digit UPI reference |
-| `POST` | `/api/payments/approve` | Staff confirm or reject a claimed payment |
-| `POST` | `/api/payments/webhook` | HMAC-SHA256 signed automatic confirmation |
+| `POST` | `/api/payments/approve` | Staff confirm or reject a payment - the only way a job is released |
 | `POST` | `/api/sim/order` | **sim only** — create a paid order |
 | `POST` | `/api/sim/quote` | **sim only** — price without ordering |
 | `POST` | `/api/sim/reset` | **sim only** — wipe everything |
@@ -202,7 +200,7 @@ src/multipart.js       binary-safe form-upload parser
 src/printer.js         Hardware Abstraction Layer: cups | windows | mock
 src/jobs.js            lifecycle, progress bus, shredding, error mapping
 src/qr.js              QR encoder (byte mode, ECC-M, versions 1-10)
-src/upi.js             UPI intent building, UTR checks, webhook HMAC
+src/upi.js             UPI intent building and UPI-reference checks
 run.sh / run.bat       one-command start: deps, printer check, dashboard
 public/kiosk.html      the touchscreen keypad
 public/upload.html     student upload page (real PDFs, real page counts)

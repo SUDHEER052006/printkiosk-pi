@@ -232,11 +232,12 @@
         </div>
 
         <div class="utr">
-          <label class="field"><span>UPI reference number (12 digits)</span>
+          <label class="field"><span>UPI reference number <span style="color:var(--faint);">(optional)</span></span>
             <input id="utr" type="text" inputmode="numeric" maxlength="12"
                    placeholder="e.g. 412345678901" autocomplete="off"></label>
           <div class="dim" style="font-size:11.5px;margin-top:5px;">
-            Your payment app shows this as "UPI transaction ID" or "UTR" on the receipt.
+            Your payment app shows this as "UPI transaction ID" or "UTR". It helps the desk find
+            your payment faster — leave it blank if you cannot see it.
           </div>
           <button class="btn go" id="claim">I have paid</button>
         </div>
@@ -246,7 +247,8 @@
           <div>
             <b>Waiting for confirmation…</b>
             <div class="dim" style="font-size:12px;">
-              A staff member is verifying your payment. This page updates on its own.
+              A staff member at the desk is confirming your payment. This page updates on its own —
+              keep it open.
             </div>
           </div>
         </div>
@@ -474,8 +476,8 @@
     if (!order) return;
     clearPayErr();
     const utr = $('utr').value.trim();
-    if (!/^[0-9]{12}$/.test(utr)) {
-      showPayErr('Enter the 12-digit UPI reference from your payment receipt.');
+    if (utr && !/^[0-9]{12}$/.test(utr)) {
+      showPayErr('A UPI reference is 12 digits. Leave it blank if you cannot find it.');
       return;
     }
     $('claim').disabled = true;
