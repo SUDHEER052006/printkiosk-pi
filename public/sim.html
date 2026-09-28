@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrintKiosk Simulator</title>
+<style>
+  :root{
+    --bg:#0b1020; --panel:#18203c; --panel-2:#1e2949; --line:#2b3760;
+    --ink:#eaf0ff; --dim:#93a1c9; --accent:#3ddc97; --accent-ink:#06301f;
+    --warn:#ffc857; --danger:#ff5f6d;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  }
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 20px 60px;}
+  h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em;}
+  h1 b{color:var(--accent);}
+  .lede{color:var(--dim);margin:0 0 22px;font-size:14px;}
+  .grid{display:grid;grid-template-columns:minmax(0,340px) minmax(0,1fr);gap:20px;align-items:start;}
+  @media (max-width:820px){.grid{grid-template-columns:1fr;}}
+  .card{border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden;}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);
+    margin:0;padding:12px 16px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.02);}
+  .card .body{padding:16px;}
+  label{display:block;font-size:12px;color:var(--dim);margin:12px 0 5px;}
+  label:first-child{margin-top:0;}
+  input,select{
+    width:100%;padding:9px 11px;border-radius:9px;border:1px solid var(--line);
+    background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px;
+  }
+  .row{display:flex;gap:10px;}.row>*{flex:1;}
+  .check{display:flex;align-items:center;gap:9px;margin-top:14px;font-size:14px;color:var(--ink);}
+  .check input{width:18px;height:18px;flex:0 0 auto;}
+  button{
+    appearance:none;border:0;border-radius:10px;padding:11px 16px;
+    font:inherit;font-weight:650;background:var(--accent);color:var(--accent-ink);
+  }
+  button:active{transform:scale(.99);}
+  button.sec{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);font-weight:600;}
+  .quote{
+    margin-top:16px;padding:12px 14px;border-radius:10px;
+    background:var(--panel-2);border:1px solid var(--line);font-size:13px;
+  }
+  .quote b{color:var(--accent);font-size:17px;}
+  .quote span{color:var(--dim);}
+  .otp{
+    margin-top:14px;padding:16px;border-radius:12px;text-align:center;
+    background:rgba(61,220,151,.09);border:1px dashed var(--accent);
+  }
+  .otp .code{
+    font:700 34px/1.1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    letter-spacing:.16em;color:var(--accent);
+  }
+  .otp .hint{font-size:12px;color:var(--dim);margin-top:6px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.06);}
+  th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;}
+  td.mono,th.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+  .tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:650;}
+  .tag.ready{background:rgba(61,220,151,.16);color:var(--accent);}
+  .tag.printing{background:rgba(255,200,87,.16);color:var(--warn);}
+  .tag.done{background:rgba(147,161,201,.16);color:var(--dim);}
+  .tag.fail{background:rgba(255,95,109,.16);color:var(--danger);}
+  .bar{display:flex;gap:10px;align-items:center;padding:12px 16px;border-top:1px solid var(--line);}
+  .muted{color:var(--dim);font-size:12px;}
+  .env{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:12px;color:var(--dim);margin-bottom:18px;}
+  .env b{color:var(--ink);font-weight:600;}
+  .env .sim{color:var(--warn);}
+  .empty{padding:26px 16px;text-align:center;color:var(--dim);font-size:13px;}
+  a{color:var(--accent);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>PRINT<b>KIOSK</b> simulator</h1>
+  <p class="lede">Stands in for the phone app and the Razorpay webhook. Create a paid order, then type its
+  code on the <a href="/" target="_blank">kiosk keypad</a>.</p>
+
+  <div class="env" id="env"></div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>New paid order</h2>
+      <div class="body">
+        <label for="f-title">Document title</label>
+        <input id="f-title" value="Data Structures Assignment 3">
+
+        <div class="row">
+          <div>
+            <label for="f-pages">Pages</label>
+            <input id="f-pages" type="number" min="1" max="200" value="3">
+          </div>
+          <div>
+            <label for="f-copies">Copies</label>
+            <input id="f-copies" type="number" min="1" max="50" value="1">
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="f-colour">Colour</label>
+            <select id="f-colour">
+              <option value="bw">Black &amp; white</option>
+              <option value="colour">Colour</option>
+            </select>
+          </div>
+          <div>
+            <label for="f-paper">Paper</label>
+            <select id="f-paper">
+              <option>A4</option>
+              <option>A3</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="check">
+          <input id="f-duplex" type="checkbox">
+          <label for="f-duplex" style="margin:0;color:var(--ink);font-size:14px;">Double-sided (duplex)</label>
+        </div>
+
+        <div class="quote" id="quote">—</div>
+
+        <div style="margin-top:16px;display:flex;gap:10px;">
+          <button id="btn-create" style="flex:1;">Create paid order</button>
+          <button id="btn-reset" class="sec" title="Delete all orders and documents">Reset</button>
+        </div>
+
+        <div class="otp" id="otp-box" hidden>
+          <div class="muted" style="margin-bottom:4px;">Pickup code</div>
+          <div class="code" id="otp-code">------</div>
+          <div class="hint" id="otp-hint"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Orders</h2>
+      <div id="orders"><div class="empty">No orders yet.</div></div>
+      <div class="bar">
+        <span class="muted" id="orders-note">Auto-refreshing every 2s</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const val = (id) => $(id).value;
+
+  const form = () => ({
+    title: val('f-title'),
+    pages: Number(val('f-pages')) || 1,
+    copies: Number(val('f-copies')) || 1,
+    duplex: $('f-duplex').checked,
+    colourMode: val('f-colour'),
+    paperSize: val('f-paper'),
+  });
+
+  async function quote() {
+    const f = form();
+    try {
+      const r = await fetch('/api/sim/quote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(f),
+      });
+      const q = await r.json();
+      if (q.error) { $('quote').textContent = q.error; return; }
+      $('quote').innerHTML =
+        '<b>Rs. ' + q.amount + '</b><br>' +
+        '<span>' + q.pages + ' pages &rarr; ' + q.sheetsPerCopy + ' sheet(s) per copy &times; ' +
+        q.copies + ' = ' + q.totalSheets + ' sheets @ Rs. ' + q.rate + '/sheet</span>';
+    } catch {
+      $('quote').textContent = 'agent offline';
+    }
+  }
+
+  for (const id of ['f-pages','f-copies','f-colour','f-paper']) $(id).addEventListener('input', quote);
+  $('f-duplex').addEventListener('change', quote);
+
+  $('btn-create').addEventListener('click', async () => {
+    $('btn-create').disabled = true;
+    try {
+      const r = await fetch('/api/sim/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form()),
+      });
+      const d = await r.json();
+      if (!r.ok) { alert(d.error || 'failed'); return; }
+      $('otp-box').hidden = false;
+      $('otp-code').textContent = d.otp;
+      $('otp-hint').textContent = d.order.order_id + ' · Rs. ' + d.order.amount + ' · type this on the kiosk';
+      refresh();
+    } finally {
+      $('btn-create').disabled = false;
+    }
+  });
+
+  $('btn-reset').addEventListener('click', async () => {
+    if (!confirm('Delete every simulated order and document?')) return;
+    await fetch('/api/sim/reset', { method: 'POST' });
+    $('otp-box').hidden = true;
+    refresh();
+  });
+
+  const TAG = {
+    READY_FOR_KIOSK: ['ready', 'ready'],
+    PRINTING: ['printing', 'printing'],
+    COMPLETED: ['done', 'completed'],
+    CREATED: ['done', 'created'],
+  };
+
+  async function refresh() {
+    let data;
+    try {
+      data = await (await fetch('/api/orders')).json();
+    } catch { return; }
+
+    const orders = data.orders || [];
+    if (!orders.length) {
+      $('orders').innerHTML = '<div class="empty">No orders yet.</div>';
+      return;
+    }
+
+    const rows = orders.map((o) => {
+      const [cls, label] = TAG[o.print_status] || ['fail', o.print_status];
+      const spec = [
+        o.document ? o.document.page_count + 'p' : '?',
+        o.copies + 'x',
+        o.duplex ? 'duplex' : 'single',
+        o.colour_mode === 'colour' ? 'colour' : 'bw',
+        o.paper_size,
+      ].join(' · ');
+      return '<tr>' +
+        '<td class="mono">' + o.order_id + '</td>' +
+        '<td class="mono" style="font-size:15px;letter-spacing:.08em;">' +
+          (o.print_status === 'READY_FOR_KIOSK' ? o.pickup_otp : '······') + '</td>' +
+        '<td>' + spec + '</td>' +
+        '<td>Rs. ' + o.amount + '</td>' +
+        '<td><span class="tag ' + cls + '">' + label + '</span></td>' +
+        '<td class="muted">' + (o.document && o.document.shredded ? 'shredded' : 'on disk') + '</td>' +
+      '</tr>';
+    }).join('');
+
+    $('orders').innerHTML =
+      '<table><thead><tr>' +
+      '<th class="mono">Order</th><th>OTP</th><th>Spec</th><th>Amount</th><th>Status</th><th>File</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  async function env() {
+    try {
+      const h = await (await fetch('/api/health')).json();
+      const p = h.printer || {};
+      $('env').innerHTML =
+        '<span>kiosk <b>' + h.kioskId + '</b></span>' +
+        '<span>driver <b class="' + (p.simulated ? 'sim' : '') + '">' + p.driver +
+          (p.simulated ? ' (simulation)' : '') + '</b></span>' +
+        '<span>printer <b>' + (p.activePrinter || 'system default') + '</b></span>' +
+        '<span>queues <b>' + (p.printers.length ? p.printers.join(', ') : 'none') + '</b></span>';
+    } catch {
+      $('env').textContent = 'agent offline';
+    }
+  }
+
+  quote(); env(); refresh();
+  setInterval(refresh, 2000);
+  setInterval(env, 15000);
+})();
+</script>
+</body>
+</html>

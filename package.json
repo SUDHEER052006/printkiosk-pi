@@ -1,0 +1,16 @@
+{
+  "name": "printkiosk-pi",
+  "version": "1.0.0",
+  "description": "PRINTKIOSK Raspberry Pi kiosk agent: OTP keypad touchscreen UI + CUPS/Windows/mock print spooling",
+  "type": "module",
+  "main": "server.js",
+  "engines": { "node": ">=18.0.0" },
+  "scripts": {
+    "start": "node server.js",
+    "sim": "PRINTER_DRIVER=mock node server.js",
+    "seed": "node scripts/seed.js",
+    "printers": "node scripts/list-printers.js"
+  },
+  "dependencies": {},
+  "license": "MIT"
+}
