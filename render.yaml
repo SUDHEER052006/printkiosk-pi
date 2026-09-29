@@ -1,0 +1,58 @@
+# Render blueprint — deploys the cloud half of PRINTKIOSK.
+#
+# What lives here:  upload page, pricing, payment approval, pickup codes, the
+#                   kiosk keypad screen and the admin dashboard. Public HTTPS,
+#                   so a phone reaches it from any Wi-Fi or mobile data.
+#
+# What does NOT:    the printing. Render has no printer. `agent.js` runs on the
+#                   machine wired to the printer and polls this service over
+#                   outbound HTTPS. See RENDER.md.
+#
+# Deploy:  push this repo to GitHub -> Render -> New -> Blueprint -> pick the repo.
+# Then:    Dashboard -> Environment, copy ADMIN_TOKEN and AGENT_TOKEN (generated
+#          for you), and fill in UPI_VPA.
+
+services:
+  - type: web
+    name: printkiosk
+    runtime: node
+    # The free plan sleeps after 15 minutes with no traffic — but the print agent
+    # long-polls every 25s, so in practice it keeps the service awake. Upgrade to
+    # starter if you want uploaded documents to survive a restart.
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Cloud mode: hand every print job to the agent instead of looking for a
+      # local printer. (Render also sets RENDER=true, which switches this on by
+      # itself — this is here so the intent is visible.)
+      - key: CLOUD
+        value: "true"
+
+      # The real flow: a person approves every payment. No auto-paid orders.
+      - key: PAYMENT_MODE
+        value: upi_manual
+      - key: SIM_ENABLED
+        value: "false"
+
+      # The promise the dashboard and the phone both count down against.
+      - key: APPROVAL_SLA_MS
+        value: "30000"
+
+      # Generated once by Render. ADMIN_TOKEN unlocks /admin; AGENT_TOKEN is the
+      # one you give the print agent. Copy both from the Environment tab.
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: AGENT_TOKEN
+        generateValue: true
+
+      # Your UPI ID, e.g. yourname@okhdfcbank. Asked for at deploy time.
+      - key: UPI_VPA
+        sync: false
+      - key: UPI_NAME
+        value: IDEA Lab PrintKiosk
+
+      - key: NODE_VERSION
+        value: "20"

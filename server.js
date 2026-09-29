@@ -15,6 +15,7 @@ import { qrSvg } from './src/qr.js';
 import { buildUpiUri, normaliseUtr, isValidVpa } from './src/upi.js';
 import { driverInfo, resolveDriver } from './src/printer.js';
 import { startJob, getJob, snapshot, bus } from './src/jobs.js';
+import * as remote from './src/remote.js';
 
 /* ------------------------------- http utils ------------------------------ */
 
@@ -104,7 +105,26 @@ function lanAddress() {
   return candidates.length ? candidates[0].address : 'localhost';
 }
 
-const uploadUrl = () => `http://${lanAddress()}:${config.port}/upload`;
+/**
+ * The address to put on the QR code.
+ *
+ * On a LAN kiosk this is the machine's own IP, so a phone on the same Wi-Fi can
+ * reach it. On Render there is no LAN: the only address that works is the
+ * public one, and the request itself is the most reliable place to read it from
+ * (RENDER_EXTERNAL_URL is right too, but a custom domain would make it stale).
+ */
+function baseUrl(req) {
+  if (config.publicUrl) return config.publicUrl;
+  const host = req && (req.headers['x-forwarded-host'] || req.headers.host);
+  if (config.cloud && host) {
+    const proto = (req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+    return `${proto}://${host}`;
+  }
+  if (config.cloud) return '';
+  return `http://${lanAddress()}:${config.port}`;
+}
+
+const uploadUrl = (req) => `${baseUrl(req)}/upload`;
 
 /**
  * Staff actions (approving a payment) are gated. With ADMIN_TOKEN set, the
@@ -118,14 +138,52 @@ function isStaff(req) {
     const b = Buffer.from(config.payments.adminToken);
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
+  // Cloud mode has no "this machine": every request arrives from the internet,
+  // so a token is the only honest gate. Refuse rather than fall through.
+  if (config.cloud) return false;
   const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   return ip === '127.0.0.1' || ip === '::1';
+}
+
+/** The print agent authenticates with its own token, never the staff one. */
+function isAgent(req) {
+  const want = config.agent.token;
+  if (!want) return !config.cloud;        // LAN dev: no token, no remote agents
+  const given = String(req.headers['x-agent-token'] || '');
+  const a = Buffer.from(given);
+  const b = Buffer.from(want);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 const clientKey = (req) =>
   (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
   req.socket.remoteAddress ||
   'unknown';
+
+/**
+ * What the dashboards should show under "printer".
+ *
+ * In cloud mode this box has no printer and `driverInfo()` would resolve to the
+ * mock driver — which would make every screen claim "simulation mode" while a
+ * real Canon is happily printing through the agent. So in cloud mode the
+ * printer view comes from whatever the agent last reported.
+ */
+async function printerView() {
+  if (!config.cloud) return driverInfo();
+  const a = remote.agentStatus();
+  const p = a.printer || {};
+  return {
+    driver: a.online ? (p.driver ? `agent:${p.driver}` : 'agent') : 'agent (offline)',
+    platform: p.platform || '',
+    configured: 'agent',
+    printers: p.printers || [],
+    activePrinter: a.online ? (p.activePrinter || '') : '',
+    simulated: Boolean(p.simulated),
+    agentOnline: a.online,
+    agentHost: a.host || null,
+    lastSeenMsAgo: a.lastSeenMsAgo,
+  };
+}
 
 /* ------------------------------ static files ----------------------------- */
 
@@ -161,7 +219,7 @@ async function handleApi(req, res, url) {
   /* -- health & hardware -- */
 
   if (method === 'GET' && pathname === '/api/health') {
-    const info = await driverInfo();
+    const info = await printerView();
     return json(res, 200, {
       ok: true,
       kioskId: config.kioskId,
@@ -172,11 +230,16 @@ async function handleApi(req, res, url) {
       simEnabled: config.simEnabled,
       resetDelayMs: config.resetDelayMs,
       otpLength: config.otp.length,
-      uploadUrl: uploadUrl(),
+      uploadUrl: uploadUrl(req),
       paymentMode: config.payments.mode,
       upiConfigured: isValidVpa(config.upi.vpa),
       upiStaticImage: Boolean(config.upi.qrImage),
       approvalRequired: config.payments.mode !== 'sim',
+      cloud: config.cloud,
+      approvalSlaMs: config.payments.slaMs,
+      // In cloud mode the printer lives behind the agent, so "is there a
+      // printer?" is really "is the agent connected?".
+      agent: config.cloud ? remote.agentStatus() : null,
       // Lets the dashboard say "you cannot approve from here" up front, instead
       // of the staff discovering it when a button silently fails.
       canApprove: isStaff(req),
@@ -185,13 +248,75 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && pathname === '/api/printers') {
-    return json(res, 200, await driverInfo());
+    return json(res, 200, await printerView());
+  }
+
+  /* ------------------------- print agent (cloud) -------------------------- *
+   * The four endpoints the machine wired to the printer uses. All outbound from
+   * its side: no inbound port, no fixed IP, works on any network.             */
+
+  if (pathname.startsWith('/api/agent/')) {
+    if (!isAgent(req)) return json(res, 401, { error: 'Bad or missing agent token' });
+
+    if (method === 'POST' && pathname === '/api/agent/hello') {
+      const body = await readJson(req);
+      const status = remote.noteAgent({
+        kioskId: body.kioskId,
+        host: body.host,
+        printer: body.printer,
+        version: body.version,
+      });
+      return json(res, 200, { ok: true, status, serverKiosk: config.kioskId, cloud: config.cloud });
+    }
+
+    // Long poll. Returns 204 when the wait expires so the agent just asks again.
+    if (method === 'GET' && pathname === '/api/agent/next') {
+      remote.noteAgent({});
+      const wait = Math.max(1000, Math.min(50000, Number(url.searchParams.get('wait')) || config.agent.longPollMs));
+      const ticket = await remote.claimNext(wait);
+      if (!ticket) {
+        res.writeHead(204, { 'Cache-Control': 'no-store' });
+        return res.end();
+      }
+      console.log(`[agent] handed ${ticket.label || ticket.ticketId} to the print station`);
+      return json(res, 200, ticket);
+    }
+
+    if (method === 'GET' && /^\/api\/agent\/jobs\/[\w-]+\/file$/.test(pathname)) {
+      const file = remote.ticketFile(pathname.split('/')[4]);
+      if (!file) return json(res, 404, { error: 'Unknown or finished job' });
+      try {
+        const data = await fsp.readFile(file);
+        res.writeHead(200, {
+          'Content-Type': 'application/pdf',
+          'Content-Length': data.length,
+          'Cache-Control': 'no-store',
+        });
+        return res.end(data);
+      } catch (err) {
+        return json(res, 410, { error: 'Document is no longer on disk: ' + err.message });
+      }
+    }
+
+    if (method === 'POST' && /^\/api\/agent\/jobs\/[\w-]+\/progress$/.test(pathname)) {
+      const body = await readJson(req);
+      const ok = remote.progress(pathname.split('/')[4], body);
+      return json(res, ok ? 200 : 404, { ok });
+    }
+
+    if (method === 'POST' && /^\/api\/agent\/jobs\/[\w-]+\/done$/.test(pathname)) {
+      const body = await readJson(req);
+      const ok = remote.finish(pathname.split('/')[4], body);
+      return json(res, ok ? 200 : 404, { ok });
+    }
+
+    return json(res, 404, { error: 'No such agent endpoint', path: pathname });
   }
 
   /* -- QR for the upload page, so a phone can join without typing -- */
 
   if (method === 'GET' && pathname === '/api/qr') {
-    const text = url.searchParams.get('text') || uploadUrl();
+    const text = url.searchParams.get('text') || uploadUrl(req);
     const scale = Math.max(2, Math.min(16, Number(url.searchParams.get('scale')) || 6));
     try {
       const svg = qrSvg(text, { scale, dark: '#11161f', light: '#ffffff' });
@@ -241,8 +366,11 @@ async function handleApi(req, res, url) {
     return json(res, 200, {
       kioskId: config.kioskId,
       uptimeSec: Math.round(process.uptime()),
-      printer: await driverInfo(),
-      uploadUrl: uploadUrl(),
+      printer: await printerView(),
+      cloud: config.cloud,
+      agent: config.cloud ? remote.agentStatus() : null,
+      approvalSlaMs: config.payments.slaMs,
+      uploadUrl: uploadUrl(req),
       paymentMode: config.payments.mode,
       canApprove: isStaff(req),
       tokenRequired: Boolean(config.payments.adminToken),
@@ -268,6 +396,10 @@ async function handleApi(req, res, url) {
             duplex: o.duplex,
             colour_mode: o.colour_mode,
             sheets: sheetsOf(o),
+            // The 30-second clock starts when the student says they have paid.
+            sla_deadline: o.payment_claimed_at
+              ? new Date(Date.parse(o.payment_claimed_at) + config.payments.slaMs).toISOString()
+              : null,
           };
         }),
       totals: {
@@ -338,7 +470,14 @@ async function handleApi(req, res, url) {
       job = startJob(result.order, { printerName: body.printerName });
     } catch (err) {
       store.updateOrder(result.order.id, { print_status: 'READY_FOR_KIOSK' });
-      return json(res, 500, { ok: false, code: 'START_FAILED', message: err.message });
+      const offline = /No print station is connected/i.test(err.message);
+      return json(res, offline ? 503 : 500, {
+        ok: false,
+        code: offline ? 'STATION_OFFLINE' : 'START_FAILED',
+        message: offline
+          ? 'The print station is offline. Your code is still valid — please tell the desk staff.'
+          : err.message,
+      });
     }
 
     // `ok` last: it means "OTP verified", distinct from the job's `succeeded`.
@@ -570,6 +709,10 @@ async function handleApi(req, res, url) {
       // The code is handed over only once the payment is actually recognised.
       otp: order.payment_status === 'PAID' ? order.pickup_otp : null,
       utr: order.payment_ref || null,
+      slaMs: config.payments.slaMs,
+      slaDeadline: order.payment_claimed_at
+        ? new Date(Date.parse(order.payment_claimed_at) + config.payments.slaMs).toISOString()
+        : null,
     });
   }
 
@@ -648,7 +791,8 @@ async function handleApi(req, res, url) {
     return json(res, 202, {
       ok: true,
       status: 'AWAITING_VERIFICATION',
-      message: 'Payment submitted. A staff member will confirm it shortly.',
+      slaMs: config.payments.slaMs,
+      message: `Payment submitted. The desk approves within ${Math.round(config.payments.slaMs / 1000)} seconds.`,
     });
   }
 
@@ -802,7 +946,7 @@ const server = http.createServer(async (req, res) => {
 store.load();
 
 const banner = async () => {
-  const info = await driverInfo();
+  const info = await printerView();
   const nets = Object.values(os.networkInterfaces())
     .flat()
     .filter((n) => n && n.family === 'IPv4' && !n.internal)
@@ -811,6 +955,7 @@ const banner = async () => {
   console.log('');
   console.log('  PRINTKIOSK  kiosk agent');
   console.log('  ' + '-'.repeat(52));
+  console.log(`  mode        ${config.cloud ? 'CLOUD (printing handled by a remote agent)' : 'LOCAL (this machine prints)'}`);
   console.log(`  kiosk id    ${config.kioskId}`);
   console.log(`  driver      ${info.driver}${info.simulated ? '  (SIMULATION - no paper will move)' : ''}`);
   console.log(`  printer     ${info.activePrinter || '(system default)'}`);
@@ -818,11 +963,34 @@ const banner = async () => {
   console.log(`  data        ${config.dataDir}`);
   console.log('  ' + '-'.repeat(52));
   console.log(`  keypad      http://localhost:${config.port}/`);
-  console.log(`  upload      ${uploadUrl()}      <- open this on the phone`);
+  const uploadLine = config.cloud
+    ? (config.publicUrl ? `${config.publicUrl}/upload` : '(the public Render URL of this service)/upload')
+    : uploadUrl(null);
+  console.log(`  upload      ${uploadLine}      <- open this on the phone`);
   console.log(`  dashboard   http://localhost:${config.port}/admin`);
   if (config.simEnabled) console.log(`  simulator   http://localhost:${config.port}/sim`);
   for (const ip of nets) console.log(`              http://${ip}:${config.port}/`);
   console.log('');
+
+  if (config.cloud) {
+    const base = config.publicUrl || '(read from each request)';
+    console.log(`  public url  ${base}`);
+    console.log('');
+    if (!config.agent.token) {
+      console.log('  FATAL-ISH: AGENT_TOKEN is not set. No print station can connect, so');
+      console.log('             nothing will ever print. Set it here and on the agent.');
+    }
+    if (!config.payments.adminToken) {
+      console.log('  FATAL-ISH: ADMIN_TOKEN is not set. In cloud mode approvals need a token,');
+      console.log('             so no payment can be approved and no code is ever released.');
+    }
+    if (config.payments.mode === 'sim') {
+      console.log('  warning:   PAYMENT_MODE=sim — orders self-approve and the admin step is skipped.');
+      console.log('             Set PAYMENT_MODE=upi_manual and SIM_ENABLED=false for the real flow.');
+    }
+    console.log('');
+    return;
+  }
 
   // Windows has no built-in silent PDF printer. Say so at boot rather than
   // letting the first real job fail with a dialog nobody is standing next to.
@@ -840,7 +1008,7 @@ const banner = async () => {
 };
 
 server.listen(config.port, config.host, async () => {
-  await resolveDriver();
+  if (!config.cloud) await resolveDriver();   // no printer to find in the cloud
   await banner();
 });
 

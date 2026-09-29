@@ -130,6 +130,20 @@
   }
   .banner svg { width: 17px; height: 17px; flex: 0 0 auto; margin-top: 1px; }
   .banner a { color: inherit; }
+
+  /* ------------------------- 30-second approval clock -------------------- */
+  .pend.claimed { border-color: var(--sun); background: #FFFDF6; }
+  .pend.due     { border-color: var(--flame); background: #FFF7F4; box-shadow: 0 0 0 3px rgba(226,110,70,.13); }
+  .sla {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+    font-size: 12px; color: var(--dim);
+  }
+  .sla .track { flex: 1; height: 5px; border-radius: 999px; background: var(--subtle); overflow: hidden; }
+  .sla .track i { display: block; height: 100%; background: var(--leaf); transition: width .4s linear; }
+  .sla.warn .track i { background: var(--sun); }
+  .sla.late .track i { background: var(--flame); }
+  .sla b { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--ink-2); }
+  .sla.late b { color: var(--flame); }
 </style>
 </head>
 <body>
@@ -273,7 +287,7 @@
             <div class="body qrwrap">
               <img id="qr" alt="Scan to open the upload page">
               <div class="u" id="qr-url">—</div>
-              <div class="dim" style="font-size:11.5px;margin-top:6px;">
+              <div class="dim" style="font-size:11.5px;margin-top:6px;" id="qr-note">
                 Phone must be on the same Wi-Fi as this kiosk.
               </div>
             </div>
@@ -284,6 +298,7 @@
             <div class="body">
               <dl style="margin:0;">
                 <div class="kv"><dt>Kiosk</dt><dd id="d-kiosk">—</dd></div>
+                <div class="kv hide" id="kv-station"><dt>Print station</dt><dd id="d-station">—</dd></div>
                 <div class="kv"><dt>Driver</dt><dd id="d-driver">—</dd></div>
                 <div class="kv"><dt>Printer</dt><dd id="d-printer">—</dd></div>
                 <div class="kv"><dt>Queues</dt><dd id="d-queues">—</dd></div>
@@ -464,7 +479,9 @@
       ? 'sim mode — no approval needed'
       : 'approve each one below';
 
+    slaMs = s.approvalSlaMs || slaMs;
     drawPending(s.pending || [], s.canApprove !== false);
+    tickSla();
 
     const locked = s.canApprove === false;
     $('lock-banner').classList.toggle('hide', !locked);
@@ -475,13 +492,33 @@
       $('lock-form').classList.toggle('hide', !s.tokenRequired);
     }
 
+    // In cloud mode nothing can print while the agent is away, and that has to
+    // be the loudest thing on the screen.
+    const stationDown = s.cloud && !(s.agent && s.agent.online);
+
     $('bar-sub').textContent =
-      `${s.kioskId} · ${p.simulated ? 'simulation mode' : (p.activePrinter || 'no printer')} · payments: ${s.paymentMode}`;
-    $('printer-pill').className = 'pill ' + (p.simulated ? 'warn' : (p.activePrinter ? 'ok' : 'bad'));
-    $('printer-pill').textContent = p.simulated ? 'simulation' : (p.activePrinter ? 'printer ready' : 'no printer');
+      `${s.kioskId} · ${s.cloud ? 'cloud' : 'local'} · ` +
+      `${stationDown ? 'print station offline' : (p.simulated ? 'simulation mode' : (p.activePrinter || 'no printer'))} · ` +
+      `payments: ${s.paymentMode}`;
+    $('printer-pill').className = 'pill ' + (stationDown ? 'bad' : (p.simulated ? 'warn' : (p.activePrinter ? 'ok' : 'bad')));
+    $('printer-pill').textContent = stationDown
+      ? 'print station offline'
+      : (p.simulated ? 'simulation' : (p.activePrinter ? 'printer ready' : 'no printer'));
     $('sim-banner').classList.toggle('hide', !p.simulated);
 
     $('d-kiosk').textContent = s.kioskId;
+
+    // Cloud mode: the printer is on the other end of the agent connection, so
+    // its health is really the agent's health. Say which, plainly.
+    const ag = s.agent;
+    $('kv-station').classList.toggle('hide', !s.cloud);
+    if (s.cloud) {
+      $('d-station').textContent = ag && ag.online
+        ? (ag.host || ag.kioskId || 'connected')
+        : 'OFFLINE — nothing can print';
+      $('d-station').style.color = ag && ag.online ? '' : 'var(--bad)';
+      $('qr-note').textContent = 'Works on any network — this is a public address.';
+    }
     $('d-driver').textContent = p.driver || '—';
     $('d-printer').textContent = p.activePrinter || 'system default';
     $('d-queues').textContent = (p.printers && p.printers.length) ? p.printers.join(', ') : 'none detected';
@@ -504,13 +541,42 @@
     drawRows(s.recent);
   }
 
+  /**
+   * The 30-second promise.
+   *
+   * A student has paid and is standing at the desk with a phone that says
+   * "waiting for approval". The deadline is redrawn four times a second so the
+   * number on the screen is the number they are watching on their phone.
+   *
+   * Nothing is auto-rejected when it runs out: the money has already moved, so a
+   * late approval still has to work. What the clock does is make late obvious.
+   */
+  let slaMs = 30000;
+
+  function tickSla() {
+    const now = Date.now();
+    for (const el of document.querySelectorAll('.sla[data-deadline]')) {
+      const left = Date.parse(el.dataset.deadline) - now;
+      const frac = Math.max(0, Math.min(1, left / slaMs));
+      el.querySelector('i').style.width = (frac * 100).toFixed(1) + '%';
+      const secs = Math.ceil(Math.abs(left) / 1000);
+      el.querySelector('b').textContent = left > 0 ? secs + 's left' : secs + 's overdue';
+      el.className = 'sla' + (left <= 0 ? ' late' : (frac < 0.4 ? ' warn' : ''));
+      el.closest('.pend').classList.toggle('due', left <= 0);
+    }
+  }
+
   function drawPending(list, canApprove) {
     $('pending-card').classList.toggle('hide', list.length === 0);
     $('pending-count').textContent = list.length;
     const esc = (x) => String(x).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 
-    // Claimed jobs first — the student is standing there waiting.
-    const sorted = list.slice().sort((a, b) => (b.claimed ? 1 : 0) - (a.claimed ? 1 : 0));
+    // Claimed jobs first, and among those the one closest to its deadline —
+    // the queue at the desk should be worked in the order the clocks run out.
+    const sorted = list.slice().sort((a, b) => {
+      if (Boolean(a.claimed) !== Boolean(b.claimed)) return a.claimed ? -1 : 1;
+      return Date.parse(a.sla_deadline || a.created_at) - Date.parse(b.sla_deadline || b.created_at);
+    });
 
     $('pending-list').innerHTML = sorted.map((p) => {
       const stamp = p.claimed_at || p.created_at;
@@ -528,6 +594,12 @@
         ? `<div class="utr">UTR ${esc(p.utr || 'not given')} · said they paid at ${when}</div>`
         : `<div class="utr" style="color:var(--faint);">no confirmation from the phone yet · ${when}</div>`;
 
+      const sla = (p.claimed && p.sla_deadline)
+        ? `<div class="sla" data-deadline="${esc(p.sla_deadline)}">
+             <span>approve in</span><b>—</b><span class="track"><i></i></span>
+           </div>`
+        : '';
+
       return `<div class="pend${p.claimed ? ' claimed' : ''}" data-id="${p.id}">
         <div class="top">
           <span class="amt">${rupees(p.amount)}</span>
@@ -536,6 +608,7 @@
         <div class="f">${esc(p.filename)}</div>
         <div class="dim" style="font-size:11.5px;">${spec} · ${p.sheets} sheets · ${esc(p.order_id)}</div>
         ${claim}
+        ${sla}
         <div class="acts">
           <button class="btn" data-act="approve" type="button"${canApprove ? '' : ' disabled title="Approvals are locked on this device"'}>Payment received</button>
           <button class="btn secondary" data-act="reject" type="button"${canApprove ? '' : ' disabled'}>Reject</button>
@@ -569,6 +642,7 @@
         for (const b of card.querySelectorAll('button')) b.disabled = false;
         return;
       }
+      card.remove();
       load();
     } catch {
       alert('Could not reach the kiosk agent.');
@@ -604,7 +678,11 @@
   });
 
   load();
-  setInterval(load, 4000);
+  // A student is standing at the desk while this ticks. Four seconds is too slow
+  // to hit a 30-second promise, so the pending list refreshes every second and
+  // the clocks themselves are redrawn locally in between.
+  setInterval(load, 1000);
+  setInterval(tickSla, 250);
 })();
 </script>
 </body>

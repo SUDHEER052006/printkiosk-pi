@@ -4,6 +4,7 @@
  *
  *   node scripts/selftest.js                  # against http://127.0.0.1:8080
  *   BASE=http://127.0.0.1:8099 node scripts/selftest.js
+ *   BASE=https://your-app.onrender.com ADMIN_TOKEN=... node scripts/selftest.js
  *
  * Drives the real path only — upload, order, approve, release — so it works
  * whether or not the /sim shortcuts are enabled. With PRINTER_DRIVER=mock it
@@ -14,6 +15,12 @@ import { makePdf } from '../src/pdf.js';
 
 const BASE = process.env.BASE || `http://127.0.0.1:${process.env.PORT || 8080}`;
 
+/**
+ * In cloud mode there is no "this machine", so approving needs the staff token.
+ * Locally it is unnecessary and harmless to send anyway.
+ */
+const ADMIN = process.env.ADMIN_TOKEN || '';
+
 let pass = 0;
 let fail = 0;
 
@@ -23,9 +30,12 @@ const ok = (name, cond, detail = '') => {
 };
 
 async function req(method, path, body) {
+  const headers = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  if (ADMIN) headers['X-Admin-Token'] = ADMIN;
   const res = await fetch(BASE + path, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
   let json = null;
@@ -86,6 +96,30 @@ async function waitForJob(jobId, timeoutMs = 240000) {
   console.log(`  driver:  ${h.body.printer.driver}${h.body.printer.simulated ? ' (simulation)' : ''}`);
   console.log(`  printer: ${h.body.printer.activePrinter || '(system default)'}`);
   console.log(`  payments: ${mode}${mode === 'sim' ? '' : ' — staff approval required'}\n`);
+
+  console.log('  mode:    ' + (h.body.cloud
+    ? 'cloud (a remote print agent does the spooling)' : 'local (this machine prints)'));
+
+  /* --------------------- cloud mode: the print station -------------------- */
+
+  if (h.body.cloud) {
+    ok('cloud mode advertises the approval SLA', h.body.approvalSlaMs > 0, h.body.approvalSlaMs + 'ms');
+
+    const ag = h.body.agent || {};
+    ok('a print station is connected', ag.online === true,
+       ag.online
+         ? `${ag.host || ag.kioskId} · ${(ag.printer || {}).activePrinter || 'default queue'}`
+         : 'NO AGENT CONNECTED - nothing can print, and the kiosk will refuse codes');
+
+    const noAuth = await fetch(BASE + '/api/agent/next?wait=1000');
+    ok('agent endpoints are closed without the agent token', noAuth.status === 401, 'HTTP ' + noAuth.status);
+
+    const noToken = await fetch(BASE + '/api/payments/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orderId: 1 }),
+    });
+    ok('approval is closed without the staff token', noToken.status === 403, 'HTTP ' + noToken.status);
+    console.log('');
+  }
 
   /* ------------------------- pricing (report s.7) ------------------------- */
 
@@ -180,6 +214,17 @@ async function waitForJob(jobId, timeoutMs = 240000) {
       { orderId: held.made.body.order.id, utr: '400000000001' });
     ok('UPI reference accepted, still awaiting a person',
        claim.status === 202 && claim.body.status === 'AWAITING_VERIFICATION');
+    ok('the phone is handed the approval deadline', claim.body.slaMs > 0, claim.body.slaMs + 'ms');
+
+    const clock = await get('/api/orders/' + held.made.body.order.id + '/status');
+    ok('the status endpoint carries the deadline the phone counts down to',
+       Boolean(clock.body.slaDeadline), clock.body.slaDeadline || '');
+
+    const dash = await get('/api/stats');
+    const waiting = (dash.body.pending || []).find((x) => x.id === held.made.body.order.id);
+    ok('the dashboard row carries the same deadline',
+       Boolean(waiting && waiting.sla_deadline && waiting.claimed),
+       waiting ? waiting.sla_deadline : 'row missing');
 
     const stillHeld = await get('/api/orders/' + held.made.body.order.id + '/status');
     ok('claiming payment does NOT release the code', stillHeld.body.otp === null);

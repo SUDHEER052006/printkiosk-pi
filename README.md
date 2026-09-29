@@ -1,44 +1,80 @@
-# PRINTKIOSK — Raspberry Pi kiosk agent
+# PRINTKIOSK
 
-The touchscreen keypad and the code that actually moves paper.
+Upload a PDF from your phone, a person approves the payment, a code appears, you type the code on
+the kiosk and the printer runs. Zero npm dependencies, Node 18+ and nothing else.
 
-This is the piece the project report puts on Vercel but that **cannot run there**: a serverless
-function has no CUPS, no printer and no route into the campus LAN. Spooling has to happen on the
-machine physically wired to the printer. That machine is this one.
+It runs two ways from the same repo.
+
+**One building, one Wi-Fi.** Everything on the machine wired to the printer:
 
 ```
-  student phone ──► Vercel web app ──► Supabase        (upload, pricing, Razorpay)
-                                          │
-                                          │  order PAID + READY_FOR_KIOSK
-                                          ▼
-                    Raspberry Pi ──► THIS AGENT ──► CUPS ──► Canon MF240
-                    (touchscreen)      keypad UI            (paper)
+  student phone ──► THIS SERVER on the Pi ──► CUPS ──► Canon MF240
+  (same Wi-Fi)      upload · pay · approve · code · print
 ```
 
-Zero npm dependencies. Node 18+ and nothing else.
+**Any network (Render).** The web half goes public, the printing stays where the printer is:
 
-Four surfaces, all served by the Pi:
+```
+  student phone      Render  https://your-app.onrender.com          the print station
+  any Wi-Fi,   ───►  /upload  pay, 30s approval, pickup code   ◄───  agent.js on the Pi
+  any mobile data    /admin   staff approve                           outbound https only
+                     /        kiosk keypad                            CUPS ──► paper
+```
+
+The agent only makes **outbound** requests, so there is no port forwarding, no static IP and no
+firewall change — and the student's side is a public URL, so any network works. See
+**`RENDER.md`**.
+
+Four surfaces:
 
 | Path | Who uses it |
 |---|---|
-| `/` | the kiosk touchscreen — OTP keypad, and a QR code to send from a phone |
-| `/upload` | the student's phone — pick a PDF, pay, get a 6-digit code |
-| `/admin` | staff — jobs, sheets, revenue, printer health |
-| `/sim` | you — mint test orders without a real upload |
+| `/` | the kiosk touchscreen — OTP keypad, live print progress |
+| `/upload` | the student's phone — pick a PDF, pay, watch the 30s approval, get a 6-digit code |
+| `/admin` | staff — approve payments against a 30-second clock, jobs, sheets, revenue, printer health |
+| `/sim` | you — mint test orders without a real upload (off in production) |
 
-See **`PAYMENTS.md`** for how UPI payment actually works here (and the one thing nobody tells you
-about UPI QR codes), **`VERCEL.md`** for what belongs on Vercel (short version: not the printing, and for a
-LAN-only setup, nothing) and **`REPORT-COMPLIANCE.md`** for a section-by-section audit against the
-project report.
+The flow, exactly:
+
+1. Phone uploads the PDF. The server counts the pages itself and prices it — the client never
+   sends a price.
+2. Phone pays by UPI QR and taps **I have paid**. No code yet.
+3. `/admin` shows the payment with a bar counting down from **30 seconds**. Staff press
+   **Payment received**.
+4. The 6-digit code appears on the phone within a second.
+5. The code is typed on the kiosk. Nothing prints before this.
+6. The agent prints it, progress animates on the kiosk screen, and the PDF is erased from both the
+   server and the station. The code cannot be used twice.
+
+Read **`PAYMENTS.md`** for why a human approves every payment (a personal UPI VPA has no API — no
+code anywhere can ask a bank whether an order was paid), **`RENDER.md`** to deploy, and
+**`REPORT-COMPLIANCE.md`** for a section-by-section audit against the project report.
 
 ---
 
 ## Quick start
 
+### One machine, one Wi-Fi
+
 ```bash
 bash run.sh                                   # Linux / Raspberry Pi / macOS
 run.bat                                       # Windows
 ```
+
+### Deploy to Render, print anywhere
+
+```bash
+# 1. the web half: push, then Render -> New -> Blueprint (render.yaml is read for you)
+git push
+
+# 2. the printing half, on the machine with the printer:
+bash run-agent.sh https://your-app.onrender.com <AGENT_TOKEN> Canon_MF240
+run-agent.bat    https://your-app.onrender.com <AGENT_TOKEN> "Canon MF240"
+```
+
+Full walkthrough, including the two tokens and the systemd unit: **`RENDER.md`**.
+
+### What `run.sh` does
 
 One command: checks Node, checks the printer, starts the agent, waits until it answers, and opens
 the dashboard. **It prints for real by default** — if no printer is set up it stops and tells you

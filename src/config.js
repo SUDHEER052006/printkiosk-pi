@@ -47,6 +47,29 @@ export const config = {
 
   kioskId: env.KIOSK_ID || `kiosk-${os.hostname()}`,
 
+  /**
+   * Cloud mode. On Render (or any host away from the printer) the server keeps
+   * doing everything except moving paper: upload, pricing, approval, codes. The
+   * printing is handed to `agent.js` running on the machine wired to the
+   * printer, which polls this server over plain outbound https.
+   *
+   * RENDER sets RENDER=true on every instance, so a deploy needs no extra flag.
+   */
+  cloud: bool(env.CLOUD, Boolean(env.RENDER)),
+
+  /** Absolute URL of this deployment, when it cannot be read off the request. */
+  publicUrl: (env.PUBLIC_URL || env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, ''),
+  publicHost: env.PUBLIC_HOST || '',
+
+  /** The print agent that does the spooling in cloud mode. */
+  agent: {
+    token: env.AGENT_TOKEN || '',
+    longPollMs: num(env.AGENT_LONGPOLL_MS, 25000),
+    offlineAfterMs: num(env.AGENT_OFFLINE_MS, 45000),
+    claimWaitMs: num(env.AGENT_CLAIM_WAIT_MS, 90000),
+    beatTimeoutMs: num(env.AGENT_BEAT_TIMEOUT_MS, 240000),
+  },
+
   dataDir: env.DATA_DIR ? path.resolve(env.DATA_DIR) : path.join(ROOT, 'data'),
   get docsDir() { return path.join(this.dataDir, 'documents'); },
   get spoolDir() { return path.join(this.dataDir, 'spool'); },
@@ -89,6 +112,13 @@ export const config = {
     })(),
     // Staff approval token. Empty = approvals allowed from this machine only.
     adminToken: env.ADMIN_TOKEN || '',
+    /**
+     * The service promise: a claimed payment is approved within this window.
+     * The dashboard counts down against it and the phone tells the student how
+     * long to expect. It is an SLA, not a deadline that destroys the order —
+     * money has already moved, so a late approval still has to work.
+     */
+     slaMs: num(env.APPROVAL_SLA_MS, 30000),
   },
 
   upi: {

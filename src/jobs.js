@@ -4,6 +4,14 @@ import crypto from 'node:crypto';
 import config from './config.js';
 import * as store from './store.js';
 import { printFile } from './printer.js';
+import { remotePrint, agentStatus } from './remote.js';
+
+/**
+ * One line decides where paper comes from. Locally it is this machine's own
+ * printer; in cloud mode the job is handed to the print agent over https and
+ * the rest of this file — progress, shredding, SSE — is identical.
+ */
+const spool = config.cloud ? remotePrint : printFile;
 
 /**
  * Job orchestrator: owns the order lifecycle from OTP release through
@@ -54,6 +62,9 @@ function friendlyError(err) {
   if (/ENOENT|no such file/i.test(m)) return 'Your document could not be found. Please contact the desk.';
   if (/timed out/i.test(m)) return 'The printer did not respond in time. Please try again.';
   if (/No (CUPS|Windows) printer/i.test(m)) return 'This kiosk has no printer configured. Please tell the desk staff.';
+  if (/No print station collected/i.test(m)) return 'The print station did not respond. Your code still works — please try again or see the desk staff.';
+  if (/print station stopped responding/i.test(m)) return 'The print station dropped out mid-job. Please see the desk staff before paying again.';
+  if (/print station reported/i.test(m)) return 'The printer could not finish this job. Please see the desk staff.';
   if (/without completing|cancel/i.test(m)) return 'The print job was cancelled at the printer. Please try again.';
   if (/already shredded/i.test(m)) return 'This document has already been printed.';
   if (/paper|jam|toner|ink|offline|busy/i.test(m)) return 'The printer needs attention (paper, toner or jam). Please tell the desk staff.';
@@ -79,6 +90,11 @@ export function startJob(order, { printerName } = {}) {
   const doc = store.getDocument(order.document_id);
   if (!doc) throw new Error('Document record missing for this order');
   if (!doc.storage_path) throw new Error('Document already shredded');
+  // Refuse before the code is spent, rather than after: a student watching a
+  // spinner that can never finish is worse than being told to see the desk.
+  if (config.cloud && !agentStatus().online) {
+    throw new Error('No print station is connected to this kiosk right now');
+  }
 
   const id = crypto.randomUUID();
   const sheetsPerCopy = order.duplex ? Math.ceil(doc.page_count / 2) : doc.page_count;
@@ -131,7 +147,7 @@ async function run(job) {
   try {
     emit(job, { stage: 'FETCHING', percent: 14, message: 'Loading document' });
 
-    const result = await printFile(
+    const result = await spool(
       doc.storage_path,
       {
         copies: order.copies,
@@ -139,6 +155,7 @@ async function run(job) {
         colourMode: order.colour_mode,
         paperSize: order.paper_size,
         totalSheets: job.summary.sheets,
+        label: order.order_id,
       },
       (ev) => {
         if (ev.jobId) job.printerJobId = ev.jobId;

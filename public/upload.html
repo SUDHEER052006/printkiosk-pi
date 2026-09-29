@@ -247,8 +247,14 @@
           <div>
             <b>Waiting for confirmation…</b>
             <div class="dim" style="font-size:12px;">
-              A staff member at the desk is confirming your payment. This page updates on its own —
-              keep it open.
+              The desk approves payments within <b id="sla-secs">30</b> seconds. Your code appears
+              here by itself — keep this page open.
+            </div>
+            <div id="sla-line" style="margin-top:7px;font-size:12px;font-weight:600;">
+              <span id="sla-count">30s</span>
+              <span style="display:block;height:5px;border-radius:999px;background:rgba(0,0,0,.08);overflow:hidden;margin-top:5px;">
+                <i id="sla-fill" style="display:block;height:100%;width:100%;background:var(--leaf);transition:width .4s linear;"></i>
+              </span>
             </div>
           </div>
         </div>
@@ -283,7 +289,7 @@
   const $ = (id) => document.getElementById(id);
   const RATES = { bw: { single: 2, duplex: 3 }, colour: { single: 10, duplex: 15 } };
   let doc = null, busy = false;
-  let order = null, poller = null, mode = 'sim', upiOk = false;
+  let order = null, poller = null, counter = null, mode = 'sim', upiOk = false, cloud = false;
 
   const showErr = (m) => { $('err').textContent = m; $('err').classList.remove('hide'); };
   const clearErr = () => $('err').classList.add('hide');
@@ -353,7 +359,9 @@
 
     xhr.onerror = () => {
       busy = false;
-      showErr('Could not reach the kiosk. Check you are on the same Wi-Fi.');
+      showErr(cloud
+        ? 'Upload failed — check your internet connection and try again.'
+        : 'Could not reach the kiosk. Check you are on the same Wi-Fi.');
       $('filebox').classList.add('hide');
       drop.classList.remove('hide');
     };
@@ -422,6 +430,7 @@
   $('again').addEventListener('click', () => {
     doc = null; order = null; picker.value = '';
     if (poller) { clearInterval(poller); poller = null; }
+    if (counter) { clearInterval(counter); counter = null; }
     $('utr').value = '';
     $('waiting').classList.add('hide');
     $('claim').classList.remove('hide');
@@ -492,6 +501,7 @@
       if (d.otp) { revealCode(d.otp); return; }
       $('waiting').classList.remove('hide');
       $('claim').classList.add('hide');
+      startCountdown(new Date(Date.now() + (d.slaMs || 30000)).toISOString(), d.slaMs || 30000);
       startPolling();
     } catch {
       showPayErr('Could not reach the kiosk.');
@@ -506,25 +516,53 @@
    * every few seconds whether the payment has been recognised yet. The code is
    * only sent once the server says PAID.
    */
+  /**
+   * The desk has 30 seconds to approve, so this page cannot check every 3. One
+   * second keeps the code arriving within a second of the button being pressed,
+   * which is what makes the whole flow feel like it is one machine.
+   */
+  function startCountdown(deadlineISO, slaMs) {
+    clearInterval(counter);
+    if (!deadlineISO) { $('sla-line').classList.add('hide'); return; }
+    $('sla-line').classList.remove('hide');
+    $('sla-secs').textContent = Math.round((slaMs || 30000) / 1000);
+    const deadline = Date.parse(deadlineISO);
+    const span = slaMs || 30000;
+    const tick = () => {
+      const left = deadline - Date.now();
+      const frac = Math.max(0, Math.min(1, left / span));
+      $('sla-fill').style.width = (frac * 100).toFixed(1) + '%';
+      $('sla-fill').style.background = left <= 0 ? 'var(--flame)' : (frac < 0.4 ? 'var(--sun)' : 'var(--leaf)');
+      $('sla-count').textContent = left > 0
+        ? Math.ceil(left / 1000) + 's'
+        : 'Taking longer than usual — please check with the desk.';
+    };
+    tick();
+    counter = setInterval(tick, 250);
+  }
+
   function startPolling() {
     if (poller) clearInterval(poller);
     poller = setInterval(async () => {
       if (!order) return;
       try {
         const s = await (await fetch('/api/orders/' + order.id + '/status')).json();
+        if (s.slaDeadline && !counter) startCountdown(s.slaDeadline, s.slaMs);
         if (s.paymentStatus === 'PAID' && s.otp) { revealCode(s.otp); }
         else if (s.paymentStatus === 'FAILED') {
           clearInterval(poller); poller = null;
+          if (counter) { clearInterval(counter); counter = null; }
           $('waiting').classList.add('hide');
           $('claim').classList.remove('hide');
           showPayErr('That payment could not be verified. Please check with the desk.');
         }
       } catch { /* keep trying */ }
-    }, 3000);
+    }, 1000);
   }
 
   function revealCode(otp) {
     if (poller) { clearInterval(poller); poller = null; }
+    if (counter) { clearInterval(counter); counter = null; }
     $('o-code').textContent = otp;
     $('o-meta').textContent = order
       ? order.order_id + ' · Rs.' + order.amount
@@ -541,6 +579,7 @@
     pill.textContent = h.kioskId;
     pill.className = 'pill ' + (p.simulated ? 'warn' : 'ok');
     mode = h.paymentMode || mode;
+    cloud = Boolean(h.cloud);
     upiOk = Boolean(h.upiConfigured);
     if (mode !== 'sim') $('pay').textContent = 'Continue to payment';
   }).catch(() => {});

@@ -1,15 +1,20 @@
 {
   "name": "printkiosk-pi",
   "version": "1.0.0",
-  "description": "PRINTKIOSK Raspberry Pi kiosk agent: OTP keypad touchscreen UI + CUPS/Windows/mock print spooling",
+  "description": "PRINTKIOSK: phone upload + admin payment approval + OTP kiosk release + real printing. Cloud half deploys to Render; agent.js prints on the machine wired to the printer.",
   "type": "module",
   "main": "server.js",
-  "engines": { "node": ">=18.0.0" },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "sim": "PRINTER_DRIVER=mock node server.js",
     "seed": "node scripts/seed.js",
-    "printers": "node scripts/list-printers.js"
+    "printers": "node scripts/list-printers.js",
+    "agent": "node agent.js",
+    "cloud": "CLOUD=true PAYMENT_MODE=upi_manual SIM_ENABLED=false node server.js",
+    "selftest": "node scripts/selftest.js"
   },
   "dependencies": {},
   "license": "MIT"

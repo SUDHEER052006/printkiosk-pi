@@ -361,7 +361,9 @@
   }
 
   const STAGE = {
-    VERIFIED: 'Code accepted', FETCHING: 'Loading your document',
+    VERIFIED: 'Code accepted',
+    QUEUED: 'Reaching the print station',
+    FETCHING: 'Loading your document',
     SPOOLING: 'Sending to printer', SPOOLED: 'Queued at the printer',
     PRINTING: 'Printing', PRINTED: 'Sheets delivered',
     SHREDDING: 'Erasing your document', COMPLETED: 'Complete', FAILED: 'Print failed',
@@ -462,7 +464,12 @@
       $('kiosk-id').textContent = h.kioskId;
       const p = h.printer || {};
       const pill = $('printer-pill');
-      if (p.simulated) { pill.className = 'pill warn'; pill.textContent = 'simulation mode'; }
+      // In cloud mode the printer is behind the agent connection: if the agent is
+      // away, the kiosk must say so before anyone types a code into it.
+      if (h.cloud && !(h.agent && h.agent.online)) {
+        pill.className = 'pill bad'; pill.textContent = 'print station offline';
+      }
+      else if (p.simulated) { pill.className = 'pill warn'; pill.textContent = 'simulation mode'; }
       else if (p.activePrinter) { pill.className = 'pill ok'; pill.textContent = p.activePrinter; }
       else { pill.className = 'pill bad'; pill.textContent = 'no printer'; }
 
@@ -489,7 +496,7 @@
 
   renderCells();
   clock(); setInterval(clock, 15000);
-  health(); setInterval(health, 20000);
+  health(); setInterval(health, 5000);
   bumpIdle();
 })();
 </script>
