@@ -259,25 +259,57 @@ sudo systemctl enable --now cups
 
 ### 4.2 Add the printer
 
-Plug the printer in via USB and power it on. Then open Chromium on the Pi:
+Plug the printer in via USB (or join it to the same Wi-Fi), power it on, then run **one command**:
 
+```bash
+bash scripts/setup-printer.sh
 ```
-http://localhost:631
+
+**You do not need to know what printer you have.** The script asks CUPS what is physically
+attached, reads the make and model out of the device itself, installs drivers based on what it
+found, creates the queue, enables it, sets A4, writes `PRINTER_NAME` into `.env`, and sends a test
+page through the very same `printFile()` the kiosk calls. If paper comes out, the kiosk will print.
+
+```bash
+bash scripts/setup-printer.sh --list      # identify the printer, change nothing
+bash scripts/setup-printer.sh --yes       # don't prompt, take the best candidate
+bash scripts/setup-printer.sh --uri URI   # force one device when several are found
+bash scripts/setup-printer.sh --name N    # force the queue name
+bash scripts/setup-printer.sh --no-test   # create the queue, skip the test page
 ```
 
-Go to **Administration → Add Printer**. It should list your printer under "Local Printers".
-Select it → Continue → pick the driver (search your model, e.g. `MF240`) → **Add Printer**.
+If more than one device is detected it lists them and asks which — or, with `--yes`, takes the
+best-ranked one automatically.
 
-On the options page set **A4** as the default paper size. Then **Print Test Page** — if paper comes
-out, CUPS is working and the rest is easy.
+#### How it picks a driver
 
-> **Canon MF240 series specifically:** if no driver is listed, install the generic UFR II driver:
-> ```bash
-> sudo apt install -y printer-driver-cups-pdf cups-filters
-> ```
-> Canon's official `.deb` for ARM is at Canon's support site if the generic one misbehaves. A
-> "Generic PCL 6" or "Generic PostScript" driver is usually good enough for plain assignment
-> printing.
+Best first, stopping at the first that works:
+
+| | Route | Why |
+|---|---|---|
+| 1 | **IPP Everywhere** ("driverless") | No vendor driver at all — CUPS generates the PPD itself, so it is **architecture-independent and works on ARM**. Network AirPrint/Mopria printers land here; USB printers do too, via `ipp-usb`. |
+| 2 | PPD matched to the **device-id** | The printer's own IEEE-1284 ID, via `lpinfo --device-id`. The accurate way to pair a driver to hardware — not grepping model names. |
+| 3 | The **vendor's** driver package | Chosen from the detected manufacturer: `hplip` for HP, `printer-driver-brlaser` for Brother, `printer-driver-escpr` for Epson, and so on. Then retry 2. |
+| 4 | `printer-driver-all` | Every free driver in Debian. Large download, last resort. Then retry 2. |
+| 5 | Generic PostScript | Warns you: text prints, but duplex or colour may be ignored. |
+
+> **Why driverless first, especially on a Pi?** Many vendors ship their Linux drivers as **x86
+> (i386/amd64) binaries only** — Canon's UFR II LT is one such — and a Raspberry Pi is ARM, so
+> those drivers cannot run at all. Chasing a vendor `.deb` on a Pi is often a dead end, whereas
+> IPP Everywhere has no architecture to be wrong about.
+
+**Doing it by hand instead?** Open `http://localhost:631` → **Administration → Add Printer**, pick
+the printer, and prefer **"IPP Everywhere"** as the driver over hunting for your exact model. Set
+**A4** on the options page, then **Print Test Page**. The equivalent one-liner:
+
+```bash
+# see what is attached, and what CUPS can drive without a vendor driver
+lpinfo -l -v
+driverless
+
+sudo lpadmin -p MyPrinter -E -v "<uri-from-above>" -m everywhere
+sudo cupsenable MyPrinter && sudo cupsaccept MyPrinter
+```
 
 ### 4.3 Find the exact queue name
 

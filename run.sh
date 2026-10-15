@@ -123,12 +123,17 @@ else
   fi
 
   if [ -z "$PRINTER" ]; then
-    die "CUPS is running but no printer is set up.
+    die "CUPS is running but no printer queue exists yet.
 
-    Add one:   open http://localhost:631  ->  Administration  ->  Add Printer
-               (plug the printer in and switch it on first)
-    Then:      lpoptions -d YOUR_QUEUE_NAME
-    Check:     lpstat -a
+    Plug the printer in, switch it on, then run:
+
+        bash scripts/setup-printer.sh
+
+    That detects it, creates the queue driverlessly (the only route that works
+    on a Raspberry Pi), pins PRINTER_NAME in .env and prints a test page.
+
+    By hand instead:   http://localhost:631 -> Administration -> Add Printer
+    Check:             lpstat -a
 
     To run without a printer anyway:   bash run.sh --sim"
   fi

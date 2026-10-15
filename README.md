@@ -54,7 +54,26 @@ code anywhere can ask a bank whether an order was paid), **`RENDER.md`** to depl
 
 ## Quick start
 
-### One machine, one Wi-Fi
+### From a fresh clone — one command
+
+```bash
+git clone https://github.com/SUDHEER052006/printkiosk-pi.git
+cd printkiosk-pi
+bash install.sh
+```
+
+`install.sh` does the whole bring-up and is safe to re-run: Node 18+, the `.env` a clone cannot
+have (it is gitignored — it asks for your UPI ID and generates `ADMIN_TOKEN`), printer detection
+and driver install for **whatever printer is attached**, a test page, then it starts the kiosk.
+
+```bash
+bash install.sh --upi you@ybl     # skip the UPI prompt
+bash install.sh --sim             # no printer, simulate (laptop demo)
+bash install.sh --service         # also install the boot service, then exit
+bash install.sh --no-start        # provision only
+```
+
+### Already configured — just run it
 
 ```bash
 bash run.sh                                   # Linux / Raspberry Pi / macOS

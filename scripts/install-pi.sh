@@ -38,9 +38,16 @@ if [ -z "$PRINTER_NAME" ]; then
 fi
 if [ -z "$PRINTER_NAME" ]; then
   echo ""
-  echo "!! No default CUPS printer found."
-  echo "   Add one at http://localhost:631  (Administration -> Add Printer)"
-  echo "   then re-run:  bash scripts/install-pi.sh \"Your_Queue_Name\""
+  echo "!! No CUPS printer queue found. Creating one now."
+  echo ""
+  bash "$APP_DIR/scripts/setup-printer.sh" --no-test || true
+  PRINTER_NAME="$(lpstat -d 2>/dev/null | sed -n 's/.*: *//p' || true)"
+fi
+if [ -z "$PRINTER_NAME" ]; then
+  echo ""
+  echo "!! Still no printer. Set it up, then re-run this installer:"
+  echo "     bash scripts/setup-printer.sh"
+  echo "     bash scripts/install-pi.sh \"Your_Queue_Name\""
   echo ""
 fi
 echo "==> printer : ${PRINTER_NAME:-<none>}"

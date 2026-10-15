@@ -35,11 +35,19 @@ async function which(cmd) {
 }
 
 function cupsOptions({ copies = 1, duplex = false, colourMode = 'bw', paperSize = 'A4' }) {
+  const colour = colourMode === 'colour';
   const args = [];
   if (copies > 1) args.push('-n', String(copies));
   args.push('-o', `media=${paperSize}`);
   args.push('-o', duplex ? 'sides=two-sided-long-edge' : 'sides=one-sided');
-  args.push('-o', colourMode === 'colour' ? 'ColorModel=RGB' : 'ColorModel=Gray');
+  // Colour is named twice on purpose. `ColorModel` is a PPD option and exists
+  // only on vendor-driver queues; a driverless (IPP Everywhere) queue — the
+  // kind that works on a Raspberry Pi, where Canon ships no ARM driver —
+  // understands `print-color-mode` instead. CUPS ignores whichever one the
+  // queue does not advertise, so sending both keeps mono/colour correct on
+  // either, instead of silently printing colour on a driverless queue.
+  args.push('-o', colour ? 'ColorModel=RGB' : 'ColorModel=Gray');
+  args.push('-o', colour ? 'print-color-mode=color' : 'print-color-mode=monochrome');
   args.push('-o', 'fit-to-page');
   return args;
 }
