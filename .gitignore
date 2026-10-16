@@ -11,3 +11,8 @@ private/
 
 # Machine-local diagnostic transcript (hostnames, device serials).
 PRINTER-FIX-REPORT.txt
+
+# Local launchers with real tokens baked in. run-station.sh is tracked, so a
+# token must never be edited into it — put it in one of these instead.
+station.local.sh
+*.local.sh
