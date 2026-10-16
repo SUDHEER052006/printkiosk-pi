@@ -74,6 +74,37 @@ Render → your service → **Environment**. Copy `ADMIN_TOKEN` and `AGENT_TOKEN
 
 ## 4. Start the print station
 
+The Pi needs one command. It runs the print agent **and** opens the OTP keypad
+fullscreen, and both stop together on Ctrl+C:
+
+```bash
+bash run-station.sh https://your-app.onrender.com <AGENT_TOKEN>
+```
+
+After the first successful run the URL and token are saved to `.env`, so from
+then on it is just `bash run-station.sh`.
+
+Before it opens the keypad it refuses to continue unless all four of these hold,
+because from a student's side every one of them looks the same — a keypad that
+takes the code and never produces paper:
+
+| Check | Why it matters |
+|---|---|
+| A CUPS queue exists and the driver resolves to **cups** | A `mock` station reports every job a success while no paper moves |
+| `/api/health` answers | A sleeping free instance can take ~50s to wake |
+| `AGENT_TOKEN` accepted by `/api/agent/hello` | Swapping it with `ADMIN_TOKEN` fails here, with a message saying so |
+| The server replies `"cloud":true` | In LOCAL mode it prints by itself and never hands this station a job |
+
+It also waits for the station to actually report online before opening the
+keypad, so the screen is never up before the thing that fulfils the codes.
+
+For a Pi that should come back printing on its own after a power cut, install it
+as a service instead — see [Keep it running](#keep-it-running).
+
+<details>
+<summary>The underlying agent command, if you want it bare</summary>
+
+
 On the Raspberry Pi (or the Windows PC) that has the printer:
 
 ```bash
@@ -112,6 +143,8 @@ You should see:
 `/admin` now shows **Print station: <hostname>** and the top-right pill turns
 green. Until it does, the kiosk refuses codes with *"The print station is
 offline"* rather than taking a code and hanging — the code stays valid.
+
+</details>
 
 ### Keep it running
 

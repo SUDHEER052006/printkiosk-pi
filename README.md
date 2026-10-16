@@ -284,6 +284,7 @@ scripts/fix-printing.sh    queue exists but nothing prints: probe every combinat
 scripts/diagnose-printer.sh bisect which layer fails (text / PDF / PrintKiosk)
 scripts/install-pi.sh      Pi provisioning, LAN mode (server.js on the Pi)
 scripts/install-pi-cloud.sh Pi provisioning, cloud mode (agent.js + Render)
+run-station.sh             run the Pi as a cloud print station (agent + keypad)
 ```
 
 ---
