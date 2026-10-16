@@ -282,7 +282,8 @@ scripts/testprint.js   send one page straight to the hardware
 scripts/setup-printer.sh   detect the printer and create its queue
 scripts/fix-printing.sh    queue exists but nothing prints: probe every combination
 scripts/diagnose-printer.sh bisect which layer fails (text / PDF / PrintKiosk)
-scripts/install-pi.sh  one-shot Pi provisioning
+scripts/install-pi.sh      Pi provisioning, LAN mode (server.js on the Pi)
+scripts/install-pi-cloud.sh Pi provisioning, cloud mode (agent.js + Render)
 ```
 
 ---

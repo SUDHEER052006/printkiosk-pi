@@ -68,7 +68,11 @@ Environment=NODE_ENV=production
 Environment=PORT=$PORT
 Environment=PRINTER_DRIVER=cups
 Environment=PRINTER_NAME=$PRINTER_NAME
-Environment=SIM_ENABLED=true
+# SIM_ENABLED=false on purpose. install.sh sets it false and warns about it;
+# this unit used to hardcode true, which quietly re-enabled the free-print
+# simulator at /sim on a boot-installed kiosk — unlimited free printing for
+# anyone who found the URL. Turn it on deliberately for a demo if you want it.
+Environment=SIM_ENABLED=false
 ExecStart=/usr/bin/node $APP_DIR/server.js
 Restart=always
 RestartSec=3

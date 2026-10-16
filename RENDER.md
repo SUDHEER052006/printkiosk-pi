@@ -115,13 +115,70 @@ offline"* rather than taking a code and hanging — the code stays valid.
 
 ### Keep it running
 
-Pi, as a service:
+One command provisions the Pi as a cloud print station — service, token, kiosk
+browser and all:
 
 ```bash
+bash scripts/install-pi-cloud.sh \
+  --server https://your-app.onrender.com \
+  --token <AGENT_TOKEN> \
+  --printer "<your queue>"
+```
+
+It refuses to install anything until it has proved the cloud end works, because
+a station that cannot authenticate is a kiosk that releases codes and never
+prints. Before touching systemd it checks that:
+
+- the queue exists on this Pi, is enabled, and the agent resolves the **cups**
+  driver rather than falling back to `mock` (a mock station reports every job as
+  a success and no paper moves),
+- `$SERVER/api/health` answers,
+- `AGENT_TOKEN` is accepted by `POST /api/agent/hello` — swapping it with
+  `ADMIN_TOKEN` fails exactly here, with a message that says so,
+- the server replies `"cloud":true`. In LOCAL mode it prints by itself and will
+  never hand this agent a job, so the kiosk would look healthy and nothing would
+  ever come out.
+
+Then it:
+
+- installs `printkiosk-agent.service` running `agent.js`,
+- keeps `AGENT_TOKEN` in `/etc/printkiosk-agent.env` at mode 0600 rather than
+  inline in the unit — unit files are world-readable, so an inline token leaks
+  to any local user,
+- points Chromium fullscreen at the **Render** URL on login, waiting on Render's
+  health endpoint first (a free instance can take ~50s to wake, and Chromium
+  opening before that leaves the student staring at an error page),
+- disables the local-mode `printkiosk.service` if it is installed, so you are
+  never looking at two unrelated order lists,
+- waits for the agent to log `waiting for print jobs` and tells you if it did
+  not, instead of assuming systemd starting it was enough.
+
+```bash
+sudo systemctl status printkiosk-agent     # is the station up?
+sudo journalctl -u printkiosk-agent -f     # watch jobs arrive and print
+```
+
+> `scripts/install-pi.sh` is the **other** installer: it builds the LAN-only
+> kiosk, running `server.js` on the Pi with Chromium on `localhost`. Do not use
+> it for a Render deployment — Render would never be involved.
+
+<details>
+<summary>By hand, if you would rather not run the script</summary>
+
+```bash
+sudo tee /etc/printkiosk-agent.env >/dev/null <<'EOF'
+CLOUD_URL=https://your-app.onrender.com
+AGENT_TOKEN=<AGENT_TOKEN>
+PRINTER_NAME=<your queue>
+PRINTER_DRIVER=cups
+EOF
+sudo chmod 600 /etc/printkiosk-agent.env
+
 sudo tee /etc/systemd/system/printkiosk-agent.service >/dev/null <<'EOF'
 [Unit]
 Description=PrintKiosk print agent
 After=network-online.target cups.service
+Wants=network-online.target cups.service
 
 [Service]
 WorkingDirectory=/home/pi/printkiosk-pi
@@ -129,7 +186,7 @@ ExecStart=/usr/bin/node agent.js
 Restart=always
 RestartSec=5
 User=pi
-EnvironmentFile=/home/pi/printkiosk-pi/.env
+EnvironmentFile=/etc/printkiosk-agent.env
 
 [Install]
 WantedBy=multi-user.target
@@ -137,6 +194,8 @@ EOF
 sudo systemctl enable --now printkiosk-agent
 journalctl -u printkiosk-agent -f
 ```
+
+</details>
 
 ## 5. Walk the flow once
 
