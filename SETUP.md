@@ -577,7 +577,63 @@ Or pass it explicitly: `PRINTER_NAME="Canon_MF240" node server.js`
 
 ### Job says COMPLETED but nothing printed
 
-The agent handed the file to CUPS successfully, so the problem is below it — CUPS or the printer.
+**This is the one failure that a created queue cannot tell you about.** `lpadmin` succeeds
+whenever it can reach the device and build a PPD, so a queue can be created, enabled and
+accepting jobs while the driver behind it silently discards every page. CUPS then reports
+`completed` and no paper moves. Reading logs will not resolve it — the only authority on
+whether a transport and driver work together is a sheet of paper.
+
+So stop guessing and run this:
+
+```bash
+bash scripts/fix-printing.sh
+```
+
+It does, in order:
+
+1. **Repairs the five conditions that silently eat jobs on a Pi.**
+   - `cups-browsed` auto-creating a queue pointing at `implicitclass://`, which accepts every
+     job and prints none. It also races `setup-printer.sh` for the queue name. The script stops
+     and disables it — a single-printer kiosk wants one explicit queue, not discovery.
+   - A queue CUPS paused after one failed job. Everything sent since then has been *queueing*,
+     not printing.
+   - Jobs left held or stuck by the previous attempt, so a probe page is unambiguous.
+   - `ipp-usb` not running, which leaves a USB printer with no IPP route at all.
+   - A missing PDF filter chain (ghostscript / poppler). This is the failure where plain text
+     prints and every PDF vanishes with no error anywhere.
+2. **Enumerates every transport the printer offers** — `driverless`, `lpinfo -v`, and whatever
+   the existing queue points at, ranked best first.
+3. **Builds the (transport × driver) matrix**: driverless IPP Everywhere, then a PPD matched to
+   the printer's own IEEE-1284 device id, then PPDs from the vendor's driver package, then
+   generic PostScript, then text-only.
+4. **Prints a probe page on each combination and asks you whether paper came out.** Answer
+   honestly — CUPS saying "completed" proves nothing.
+5. **Pins the first combination that physically printed** as the real queue, with A4 and mono
+   defaults, then proves it through PrintKiosk's own `printFile()`.
+
+A full transcript lands in `PRINTER-FIX-REPORT.txt`. If every combination fails, that file names
+which of three things it is, and the quickest discriminator is whether the **text-only** probe
+printed:
+
+| Text-only probe | Verdict |
+|---|---|
+| Printed, nothing else did | The transport is sound and this printer has **no graphics driver for ARM**. See below. |
+| Nothing printed at all | The printer is in an error state it never reported, or the cable/port is bad. |
+
+#### If the printer has no ARM driver
+
+Canon UFR II LT and CAPT, and some Samsung and Lexmark models, are **host-based**: the rendering
+lives in a closed driver shipped as x86-only binaries. A Raspberry Pi is ARM, so that driver
+cannot run there at all and no amount of configuration changes it. Two ways out:
+
+- **Connect the printer by Wi-Fi and turn AirPrint / Mopria ON in the printer's own menu.** Many
+  ship with it off. That makes it an IPP Everywhere device, the driverless route starts working,
+  and `fix-printing.sh` will find it on the next run. This is the cheaper fix.
+- **Keep the Pi as the kiosk and move only the printing** to an x86 mini-PC that has the vendor
+  driver installed, running PrintKiosk's agent against it:
+  `bash run-agent.sh https://your-app <AGENT_TOKEN> "<queue>"`. Nothing in the kiosk half changes.
+
+Once something prints, the plain checks are still worth a look if it recurs:
 
 ```bash
 lpstat -t                      # full status of everything
@@ -586,7 +642,13 @@ cancel -a                      # clear a jammed queue
 sudo systemctl restart cups
 ```
 
-Check the obvious too: paper, toner, printer's own error light, USB cable.
+And the obvious: paper, toner seated, lid shut, the printer's own error light, a data (not
+charge-only) USB cable straight into the Pi rather than through a hub, and a tray not set to
+Letter while every job asks for A4.
+
+To bisect which *layer* fails rather than find a working combination, there is also
+`bash scripts/diagnose-printer.sh`, which sends the same page by three routes (plain text via
+`lp`, a PDF via `lp`, and PrintKiosk's own code path) and reports which reach the hardware.
 
 ### Windows: a print dialog opens instead of printing silently
 

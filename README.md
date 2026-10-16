@@ -158,6 +158,21 @@ PRINTER_NAME="Canon_MF240" node server.js
 `testprint.js` bypasses the server, the OTP and the order entirely — it is the fastest way to tell a
 printer problem from a software problem when you first plug the hardware in.
 
+### Nothing came out, but the queue exists
+
+```bash
+bash scripts/fix-printing.sh
+```
+
+`lpadmin` succeeds whenever it can reach the device, so a queue can be created, enabled and
+accepting jobs while the driver behind it discards every page — CUPS reports `completed` and no
+paper moves. That is not something a log can settle. `fix-printing.sh` repairs the conditions that
+silently eat jobs (a `cups-browsed` `implicitclass://` queue, a queue CUPS paused after one failure,
+stuck jobs, a dead `ipp-usb`, a missing PDF filter chain), then **prints a probe page on every
+transport and driver combination and asks you which one produced paper** — and pins that one into
+`.env`. Transcript and verdict land in `PRINTER-FIX-REPORT.txt`. Details in
+[SETUP.md](SETUP.md#job-says-completed-but-nothing-printed).
+
 Drop `PRINTER_DRIVER` entirely and the agent auto-detects: CUPS on Linux/Pi/macOS, the Windows
 spooler on Windows, mock if neither is present. Anything other than `mock` prints for real.
 
@@ -264,6 +279,9 @@ public/sim.html        simulator console (generated PDFs, order list)
 public/assets/         IDEA Lab logo, favicon, shared light theme
 scripts/selftest.js    end-to-end test of the report's test cases
 scripts/testprint.js   send one page straight to the hardware
+scripts/setup-printer.sh   detect the printer and create its queue
+scripts/fix-printing.sh    queue exists but nothing prints: probe every combination
+scripts/diagnose-printer.sh bisect which layer fails (text / PDF / PrintKiosk)
 scripts/install-pi.sh  one-shot Pi provisioning
 ```
 

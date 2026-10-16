@@ -8,3 +8,6 @@ smoke.pdf
 # local secrets and personal payment details
 .env
 private/
+
+# Machine-local diagnostic transcript (hostnames, device serials).
+PRINTER-FIX-REPORT.txt

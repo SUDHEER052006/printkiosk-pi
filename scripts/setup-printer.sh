@@ -56,6 +56,19 @@ info() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[0;31mERROR:\033[0m %s\n\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# ask <prompt> <default> -> echoes the answer.
+#
+# Defined here, not inherited: install.sh runs this file with `bash`, a fresh
+# shell, so install.sh's own ask() is not in scope. Without this the "which
+# printer?" prompt died with "ask: command not found" and silently took
+# candidate 1 — usually the right one, but the choice was never really offered.
+ask() {
+  local prompt="$1" def="${2:-}" reply=""
+  if [ "$ASSUME_YES" -eq 1 ] || [ ! -t 0 ]; then printf '%s' "$def"; return; fi
+  read -r -p "    $prompt" reply < /dev/tty || reply=""
+  printf '%s' "${reply:-$def}"
+}
+
 if [ "$(uname -s)" != "Linux" ]; then
   die "This script is for Raspberry Pi OS / Debian.
     On Windows, add the printer in Settings -> Printers & scanners, then run:

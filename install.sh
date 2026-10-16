@@ -268,15 +268,70 @@ else
 fi
 
 # --------------------------------------------------------------- 5. test page
+#
+# This step used to lie. testprint.js exits 0 as soon as `lp` accepts the job
+# and the job leaves the queue — which happens even when the driver discards
+# every page. "hardware confirmed" was printed while no paper had moved, and
+# the install ended looking successful on a kiosk that could not print.
+#
+# So the test is not complete until a human confirms paper. If none came out,
+# hand straight over to fix-printing.sh, which probes every transport and
+# driver combination until one physically prints, and pins that one.
 QUEUE="$(get_env PRINTER_NAME)"
 if [ "$SIM" -eq 0 ] && [ -n "$QUEUE" ]; then
   step "Test page"
-  if node scripts/testprint.js --printer "$QUEUE"; then
-    ok "hardware confirmed — the kiosk uses this same printFile()"
+  info "Load A4 paper and watch the printer."
+
+  TESTPRINT_OK=0
+  if node scripts/testprint.js --printer "$QUEUE"; then TESTPRINT_OK=1; fi
+
+  PAPER=""
+  if [ "$TESTPRINT_OK" -eq 1 ]; then
+    ok "CUPS accepted the job and it left the queue"
+    PAPER="$(ask 'Did a page actually come out of the printer? [y/N] ' '')"
   else
-    warn "The test page did not print. The queue exists but the hardware path fails."
-    info "lpstat -t   and   sudo tail -40 /var/log/cups/error_log"
+    warn "The test page failed before it reached the queue."
   fi
+
+  case "$PAPER" in
+    y|Y|yes|YES)
+      ok "hardware confirmed — the kiosk uses this same printFile()"
+      ;;
+    '')
+      # No tty, or --yes: nobody can confirm. Say so rather than claim success.
+      if [ "$TESTPRINT_OK" -eq 1 ] && { [ "$ASSUME_YES" -eq 1 ] || [ ! -t 0 ]; }; then
+        warn "Nobody could confirm paper (non-interactive). CUPS accepting a job"
+        warn "is not proof it printed. If no page came out, run:"
+        info "  bash scripts/fix-printing.sh"
+      else
+        step "No paper — finding a combination that does print"
+        info "A created queue is not a working queue: lpadmin succeeds whenever"
+        info "it can reach the device, even when the driver then discards pages."
+        info "fix-printing.sh probes every transport and driver until one prints."
+        printf '\n'
+        if bash scripts/fix-printing.sh --name "$QUEUE"; then
+          QUEUE="$(get_env PRINTER_NAME)"
+          ok "printing fixed — queue is now '$QUEUE'"
+        else
+          warn "Could not find a combination that prints."
+          info "Read the verdict in:  PRINTER-FIX-REPORT.txt"
+          info "The kiosk below will still run; it just cannot print yet."
+        fi
+      fi
+      ;;
+    *)
+      step "No paper — finding a combination that does print"
+      printf '\n'
+      if bash scripts/fix-printing.sh --name "$QUEUE"; then
+        QUEUE="$(get_env PRINTER_NAME)"
+        ok "printing fixed — queue is now '$QUEUE'"
+      else
+        warn "Could not find a combination that prints."
+        info "Read the verdict in:  PRINTER-FIX-REPORT.txt"
+        info "The kiosk below will still run; it just cannot print yet."
+      fi
+      ;;
+  esac
 fi
 
 # ----------------------------------------------------------------- 6. service
